@@ -10,6 +10,7 @@ public enum FrameType : byte
     AudioPc = 0x01,
     AudioMic = 0x02,
     Format = 0x03,
+    Config = 0x04,
     Ping = 0xFF,
 }
 

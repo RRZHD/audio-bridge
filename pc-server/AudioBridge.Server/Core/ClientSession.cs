@@ -111,6 +111,11 @@ public sealed class ClientSession : IDisposable
                     var decoded = _micCodec.Decode(frame.Payload, _micDecodeScratch);
                     _engine.PlayMicSamples(_micDecodeScratch, decoded);
                 }
+                else if (frame.Type == FrameType.Config && frame.Payload.Length >= 4)
+                {
+                    var bitrate = BitConverter.ToInt32(frame.Payload, 0);
+                    _pcCodec.SetBitrate(bitrate);
+                }
                 // PING and unknown types: no-op, receiving anything resets the read timeout implicitly.
             }
         }

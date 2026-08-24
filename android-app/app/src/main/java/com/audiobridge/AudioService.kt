@@ -35,6 +35,11 @@ class AudioService : Service() {
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
         const val EXTRA_BT_ADDRESS = "bt_address"
+        const val EXTRA_PC_BITRATE = "pc_bitrate"
+        const val EXTRA_MIC_BITRATE = "mic_bitrate"
+
+        const val DEFAULT_PC_BITRATE = 320_000
+        const val DEFAULT_MIC_BITRATE = 32_000
 
         private const val CHANNEL_ID = "audio_bridge_channel"
         private const val NOTIFICATION_ID = 1
@@ -62,6 +67,8 @@ class AudioService : Service() {
         val host = intent.getStringExtra(EXTRA_HOST) ?: ""
         val port = intent.getIntExtra(EXTRA_PORT, 57120)
         val btAddress = intent.getStringExtra(EXTRA_BT_ADDRESS) ?: ""
+        val pcBitrate = intent.getIntExtra(EXTRA_PC_BITRATE, DEFAULT_PC_BITRATE)
+        val micBitrate = intent.getIntExtra(EXTRA_MIC_BITRATE, DEFAULT_MIC_BITRATE)
 
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification("Подключение..."),
@@ -78,7 +85,7 @@ class AudioService : Service() {
         }
 
         running.set(true)
-        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport) }
+        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate) }
         return START_STICKY
     }
 
@@ -96,14 +103,14 @@ class AudioService : Service() {
         super.onDestroy()
     }
 
-    private fun runLoop(transport: Transport) {
+    private fun runLoop(transport: Transport, pcBitrate: Int, micBitrate: Int) {
         while (running.get()) {
             try {
                 StatusBus.postStatus("Подключение (${transport.kind})...")
                 val conn = transport.connect()
                 StatusBus.postStatus("Подключено (${transport.kind})")
                 updateNotification("Подключено (${transport.kind})")
-                runSession(transport.kind, conn)
+                runSession(transport.kind, conn, pcBitrate, micBitrate)
             } catch (e: Exception) {
                 StatusBus.postLog("Ошибка соединения: ${e.message}")
             }
@@ -118,13 +125,23 @@ class AudioService : Service() {
         }
     }
 
-    private fun runSession(kind: TransportKind, conn: OpenConnection) {
+    private fun runSession(kind: TransportKind, conn: OpenConnection, pcBitrate: Int, micBitrate: Int) {
         val writeLock = Any()
         val sessionAlive = AtomicBoolean(true)
         val lastRecvAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
 
         val micCodec: MicAudioCodec = if (kind == TransportKind.BLUETOOTH)
-            OpusMicCodec(MIC_SAMPLE_RATE, 32_000) else RawPcm16MicCodec()
+            OpusMicCodec(MIC_SAMPLE_RATE, micBitrate) else RawPcm16MicCodec()
+
+        // Tell the PC what bitrate to use for its Opus encoder (only takes effect if this session
+        // ends up on the Opus/Bluetooth path — ignored by the raw Wi-Fi/USB path). See PROTOCOL.md.
+        try {
+            synchronized(writeLock) {
+                FrameIO.writeFrame(conn.output, FrameType.CONFIG, FrameIO.buildConfigPayload(pcBitrate))
+            }
+        } catch (e: Exception) {
+            StatusBus.postLog("Не удалось отправить CONFIG: ${e.message}")
+        }
 
         var pcCodec: PcAudioCodec? = null
         var audioTrack: AudioTrack? = null

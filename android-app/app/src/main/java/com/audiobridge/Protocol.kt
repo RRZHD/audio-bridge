@@ -11,6 +11,7 @@ object FrameType {
     const val AUDIO_PC: Byte = 0x01
     const val AUDIO_MIC: Byte = 0x02
     const val FORMAT: Byte = 0x03
+    const val CONFIG: Byte = 0x04
     const val PING: Byte = 0xFF.toByte()
 }
 
@@ -44,6 +45,9 @@ object FrameIO {
         val payload = if (length == 0) ByteArray(0) else readExact(input, length)
         return Frame(type, payload)
     }
+
+    fun buildConfigPayload(pcAudioBitrateBps: Int): ByteArray =
+        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(pcAudioBitrateBps).array()
 
     fun parseFormat(payload: ByteArray): PcFormat {
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)

@@ -20,6 +20,10 @@ public interface IPcAudioCodec
 
     /// <summary>Decode wire bytes back into interleaved float PCM. Returns sample count per channel.</summary>
     int Decode(byte[] payload, float[] outInterleaved);
+
+    /// <summary>Applied live, without recreating the encoder. No-op for codecs that don't have a
+    /// bitrate concept (e.g. raw passthrough).</summary>
+    void SetBitrate(int bitrateBps);
 }
 
 /// <summary>Encodes/decodes the phone->PC (mic) stream. Always PCM16 mono 16kHz canonical form.</summary>
@@ -47,6 +51,8 @@ public sealed class RawFloat32PcCodec : IPcAudioCodec
         Buffer.BlockCopy(payload, 0, outInterleaved, 0, payload.Length);
         return count;
     }
+
+    public void SetBitrate(int bitrateBps) { /* not applicable to raw PCM */ }
 }
 
 /// <summary>Opus-compressed — used for Bluetooth RFCOMM, where raw stereo PCM would not reliably fit.</summary>
@@ -89,6 +95,11 @@ public sealed class OpusPcCodec : IPcAudioCodec
         var outBytes = new byte[len];
         Array.Copy(_scratch, outBytes, len);
         return outBytes;
+    }
+
+    public void SetBitrate(int bitrateBps)
+    {
+        _encoder.Bitrate = Math.Clamp(bitrateBps, 6000, 510_000);
     }
 
     public int Decode(byte[] payload, float[] outInterleaved)
