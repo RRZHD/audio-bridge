@@ -15,6 +15,7 @@ public sealed class MainForm : Form
     private readonly AudioEngine _engine = new();
     private readonly TcpServerListener _tcp = new();
     private readonly BluetoothServerListener _bt = new();
+    private readonly DiscoveryResponder _discovery = new();
     private readonly List<ClientSession> _sessions = new();
     private readonly object _sessionsLock = new();
 
@@ -40,6 +41,7 @@ public sealed class MainForm : Form
         _engine.Log += AppendLog;
         _tcp.Log += AppendLog;
         _bt.Log += AppendLog;
+        _discovery.Log += AppendLog;
         _tcp.ClientAccepted += OnClientAccepted;
         _bt.ClientAccepted += OnBluetoothClientAccepted;
 
@@ -140,8 +142,10 @@ public sealed class MainForm : Form
 
             _engine.StartCapture(captureDevice);
             _engine.StartMicPlayback(micOutDevice);
-            _tcp.Start((int)_portInput.Value);
+            var port = (int)_portInput.Value;
+            _tcp.Start(port);
             _bt.Start();
+            _discovery.Start(port);
 
             _running = true;
             _startStopButton.Text = "Стоп";
@@ -161,6 +165,7 @@ public sealed class MainForm : Form
     {
         _tcp.Stop();
         _bt.Stop();
+        _discovery.Stop();
         lock (_sessionsLock)
         {
             foreach (var s in _sessions.ToArray()) s.Disconnect();
