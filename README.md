@@ -44,6 +44,15 @@ adb install -r android-app/app/build/outputs/apk/release/app-release.apk
 ```
 Либо открой `android-app/` в Android Studio и нажми Run.
 
+Приложение не в Play Store, поэтому обновляется само: при запуске проверяет
+[GitHub Releases](https://github.com/RRZHD/audio-bridge/releases) этого репозитория, и если там
+тег новее установленной версии — показывает баннер "Обновить" (качает .apk из релиза и передаёт
+системному установщику). Чтобы выпустить новую версию, подними `versionName`/`versionCode` в
+`android-app/app/build.gradle.kts` и опубликуй релиз с тегом `vX.Y.Z` и .apk-ассетом:
+```bash
+gh release create vX.Y.Z android-app/app/build/outputs/apk/release/app-release.apk --title vX.Y.Z --notes "..."
+```
+
 Интерфейс — Jetpack Compose/Material 3, тёмная/светлая тема подхватывается из системной, на
 Android 12+ работают динамические цвета. Переключение режима Wi-Fi/USB/Bluetooth — сегментированными
 кнопками сверху, статус-карточка с индикатором сразу под ним, сворачиваемый лог снизу, настройки
