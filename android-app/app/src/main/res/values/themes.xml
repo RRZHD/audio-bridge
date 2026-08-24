@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <style name="Theme.AudioBridge" parent="Theme.AppCompat.DayNight.NoActionBar">
-        <item name="colorPrimary">@color/accent</item>
-        <item name="colorPrimaryDark">@color/launcher_background</item>
-        <item name="colorAccent">@color/accent</item>
+    <!-- Only used for the cold-start window background before Compose takes over — actual theming
+         (colors, typography, dark mode) lives in ui/theme/Theme.kt. -->
+    <style name="Theme.AudioBridge" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:windowBackground">@color/launcher_background</item>
     </style>
 </resources>
