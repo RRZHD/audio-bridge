@@ -35,13 +35,13 @@ dotnet run
 
 ### 2. Android-приложение
 
-APK уже собран: `android-app/app/build/outputs/apk/debug/app-debug.apk`.
+APK уже собран и подписан релизным ключом: `android-app/app/build/outputs/apk/release/app-release.apk`.
 
 Установка через adb (провод или уже подключённый Wi-Fi-adb):
 ```bash
-adb install -r android-app/app/build/outputs/apk/debug/app-debug.apk
+adb install -r android-app/app/build/outputs/apk/release/app-release.apk
 ```
-Либо открой `android-app/` в Android Studio и нажми Run.
+Либо открой `android-app/` в Android Studio и нажми Run (debug-вариант).
 
 Интерфейс — Jetpack Compose/Material 3 (тёмная/светлая тема по системной, поддержка
 динамических цветов на Android 12+): переключатель режима Wi-Fi/USB/Bluetooth сегментированными
@@ -85,10 +85,56 @@ IP вручную нужен только если автопоиск ничег
 
 - Реконнект есть (2 сек между попытками, детект мёртвого соединения по PING/9 сек), но не покрыт
   тестами на реальных обрывах связи — если заметишь зависания, дай знать.
-- APK собран как debug (не подписан релизным ключом) — для личного использования это нормально,
-  для распространения нужно будет подписать релизным keystore.
-- Installer не подписан Authenticode-сертификатом — SmartScreen может предупредить при первом
-  запуске ("Windows защитила ваш компьютер"), это ожидаемо для неподписанного личного инструмента.
+- Собранный installer подписан Authenticode-сертификатом с приватного code-signing CA (не публичный
+  CA из программы доверенных корневых Windows) — подпись валидна и проверяема (`signtool verify`),
+  но SmartScreen у сторонних пользователей, у которых не установлен корневой этого CA как
+  доверенный, всё равно может показать предупреждение "Windows защитила ваш компьютер". На машинах,
+  где корневой сертификат уже доверенный (свои устройства), предупреждения не будет. Приватный
+  ключ сертификата в репозитории не хранится и не хранится локально после сборки — см. "Подпись
+  установщика" ниже.
+
+## Подпись релизной сборки (Android)
+
+Релизный keystore (`android-app/keystore/release.jks`) и пароли к нему (`android-app/keystore.properties`)
+**сознательно не в git** — это публичный репозиторий, а закрытый ключ приложения раскрывать нельзя
+(и Google Play в любом случае требует, чтобы он оставался приватным). Оба пути в `.gitignore`.
+
+Чтобы собрать свою подписанную сборку:
+```bash
+keytool -genkeypair -v -keystore android-app/keystore/release.jks -alias audiobridge \
+  -keyalg RSA -keysize 2048 -validity 10000
+```
+и создай `android-app/keystore.properties`:
+```properties
+storeFile=keystore/release.jks
+storePassword=...
+keyAlias=audiobridge
+keyPassword=...
+```
+После этого `gradlew :app:assembleRelease` подписывает APK автоматически (без файла — соберётся
+неподписанный release APK, `assembleDebug` собирается debug-ключом Android как обычно, отдельной
+настройки не требует).
+
+**Важно:** если этот keystore потерян, обновить уже установленное приложение с тем же
+`applicationId` под той же подписью будет невозможно — сохрани `release.jks` и пароли отдельно
+(менеджер паролей / бэкап), не полагаясь на то, что они остались в рабочей копии.
+
+## Подпись установщика (Authenticode)
+
+`installer/output/AudioBridgeServer-Setup.exe` подписан code-signing сертификатом (`extendedKeyUsage
+= codeSigning`), выпущенным на приватном CA — приватный ключ живёт только там же, где и сам CA, и
+никогда не попадает ни в git, ни на диск разработческой машины дольше, чем нужно на один вызов
+`signtool sign`. Порядок для своего CA:
+
+```
+signtool sign /fd SHA256 /f cert.pfx /p <пароль> /tr http://timestamp.digicert.com /td SHA256 AudioBridgeServer-Setup.exe
+signtool verify /pa AudioBridgeServer-Setup.exe
+```
+
+Такой сертификат снимает предупреждение SmartScreen только на машинах, где корневой сертификат
+этого CA уже установлен в доверенные — для случайного стороннего пользователя без публичного
+(коммерческого) code-signing сертификата от CA из программы доверенных корневых Windows
+предупреждение всё равно будет появляться.
 
 ## Лицензия
 

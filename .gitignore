@@ -10,6 +10,10 @@ installer/output/
 android-app/.gradle/
 android-app/**/build/
 android-app/local.properties
+
+# Release signing secrets — NEVER commit these (see README "Подпись релизной сборки")
+android-app/keystore.properties
+android-app/keystore/
 android-app/.idea/
 android-app/*.iml
 android-app/**/*.iml
