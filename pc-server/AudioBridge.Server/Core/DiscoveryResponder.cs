@@ -14,7 +14,11 @@ namespace AudioBridge.Server.Core;
 /// </summary>
 public sealed class DiscoveryResponder : IDisposable
 {
-    public const int DiscoveryPort = 57121;
+    // Chosen below the ephemeral/dynamic port range (49152+) that Hyper-V/WSL/Docker carve into
+    // large excluded blocks for NAT (`netsh int ipv4 show excludedportrange protocol=udp`) — a port
+    // up there has a real chance of landing in one of those reserved ranges and failing to bind
+    // with WSAEACCES, which is exactly what happened during testing with port 57121.
+    public const int DiscoveryPort = 45120;
     private static readonly byte[] RequestMagic = Encoding.ASCII.GetBytes("ABDQ");
     private static readonly byte[] ResponseMagic = Encoding.ASCII.GetBytes("ABDR");
 
@@ -23,15 +27,30 @@ public sealed class DiscoveryResponder : IDisposable
 
     public event Action<string>? Log;
 
+    /// <summary>
+    /// Never throws — discovery is a convenience, not core functionality (TCP/Bluetooth still work
+    /// without it), so a bind failure here should be logged and shrugged off rather than taking the
+    /// whole server down. See the DiscoveryPort comment for why binds can fail on some machines.
+    /// </summary>
     public void Start(int tcpPort)
     {
         Stop();
-        _cts = new CancellationTokenSource();
-        _udp = new UdpClient();
-        _udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
-        _udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
-        Log?.Invoke($"Discovery responder listening on UDP {DiscoveryPort}");
-        _ = ListenLoopAsync(_udp, tcpPort, _cts.Token);
+        try
+        {
+            _cts = new CancellationTokenSource();
+            _udp = new UdpClient();
+            _udp.Client.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, true);
+            _udp.Client.Bind(new IPEndPoint(IPAddress.Any, DiscoveryPort));
+            Log?.Invoke($"Discovery responder listening on UDP {DiscoveryPort}");
+            _ = ListenLoopAsync(_udp, tcpPort, _cts.Token);
+        }
+        catch (Exception ex)
+        {
+            Log?.Invoke($"Discovery responder disabled — couldn't bind UDP {DiscoveryPort}: {ex.Message}. " +
+                        "Wi-Fi/USB/Bluetooth still work, just type the PC's IP manually in the app.");
+            _udp?.Dispose();
+            _udp = null;
+        }
     }
 
     private async Task ListenLoopAsync(UdpClient udp, int tcpPort, CancellationToken ct)

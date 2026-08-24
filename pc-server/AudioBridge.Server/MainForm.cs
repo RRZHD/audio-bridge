@@ -140,12 +140,18 @@ public sealed class MainForm : Form
             var captureDevice = _captureDeviceCombo.SelectedItem as MMDevice;
             var micOutDevice = _micOutputDeviceCombo.SelectedItem as MMDevice;
 
+            // Capture/TCP are core — a failure here really should stop the whole start attempt.
             _engine.StartCapture(captureDevice);
             _engine.StartMicPlayback(micOutDevice);
             var port = (int)_portInput.Value;
             _tcp.Start(port);
-            _bt.Start();
-            _discovery.Start(port);
+
+            // Bluetooth and discovery are optional extras — Wi-Fi/USB still work without them, so
+            // don't let either one's failure (no Bluetooth radio, a reserved discovery port, etc.)
+            // take down a server that's otherwise fine.
+            try { _bt.Start(); }
+            catch (Exception ex) { AppendLog($"Bluetooth недоступен: {ex.Message}"); }
+            _discovery.Start(port); // never throws — see DiscoveryResponder.Start
 
             _running = true;
             _startStopButton.Text = "Стоп";

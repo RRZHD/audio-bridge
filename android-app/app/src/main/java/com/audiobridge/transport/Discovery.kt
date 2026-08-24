@@ -15,7 +15,8 @@ data class DiscoveredServer(val name: String, val host: String, val port: Int)
  * Only meaningful for Wi-Fi; USB and Bluetooth don't need an IP at all.
  */
 object Discovery {
-    private const val DISCOVERY_PORT = 57121
+    // Must match DiscoveryResponder.DiscoveryPort on the PC side.
+    private const val DISCOVERY_PORT = 45120
     private val REQUEST = "ABDQ".toByteArray(Charsets.US_ASCII)
     private val RESPONSE_MAGIC = "ABDR".toByteArray(Charsets.US_ASCII)
 
