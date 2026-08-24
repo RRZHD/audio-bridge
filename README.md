@@ -68,3 +68,9 @@ adb install -r android-app/app/build/outputs/apk/debug/app-debug.apk
   `Codecs.cs` / `Codecs.kt` (320kbps музыка, 32kbps голос).
 - APK собран как debug (не подписан релизным ключом) — для личного использования это нормально,
   для распространения нужно будет подписать релизным keystore.
+
+## Лицензия
+
+MIT — см. [LICENSE](LICENSE). Исключение: вендоренный Opus-кодек в
+`android-app/app/src/main/java/org/concentus/` — сторонний код со своей BSD-style лицензией,
+см. `LICENSE.txt` в этой же папке.
