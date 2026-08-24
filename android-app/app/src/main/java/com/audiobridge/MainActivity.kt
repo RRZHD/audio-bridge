@@ -26,6 +26,7 @@ import androidx.compose.material.icons.filled.PowerSettingsNew
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.SystemUpdate
 import androidx.compose.material.icons.filled.Wifi
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -97,6 +98,15 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
 
     var pairedDevices by remember { mutableStateOf(listOf<BluetoothDevice>()) }
     var showSettingsSheet by remember { mutableStateOf(false) }
+
+    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
+    var updateDismissed by remember { mutableStateOf(false) }
+    var downloadingUpdate by remember { mutableStateOf(false) }
+
+    LaunchedEffect(Unit) {
+        val info = withContext(Dispatchers.IO) { UpdateChecker.checkForUpdate(BuildConfig.VERSION_NAME) }
+        if (info != null) updateInfo = info
+    }
 
     DisposableEffect(Unit) {
         StatusBus.statusListener = { status = it }
@@ -186,6 +196,24 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
             verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
             Spacer(Modifier.height(4.dp))
+
+            val info = updateInfo
+            if (info != null && !updateDismissed) {
+                UpdateBanner(
+                    info = info,
+                    downloading = downloadingUpdate,
+                    onDismiss = { updateDismissed = true },
+                    onUpdate = {
+                        if (UpdateInstaller.canInstallPackages(context)) {
+                            downloadingUpdate = true
+                            UpdateInstaller.downloadAndInstall(context, info.apkUrl, info.version)
+                        } else {
+                            context.startActivity(UpdateInstaller.installPermissionSettingsIntent(context))
+                        }
+                    },
+                )
+            }
+
             StatusCard(status = status, connected = connected)
 
             ModeSelector(mode = mode, enabled = !connected, onSelect = { mode = it })
@@ -257,6 +285,40 @@ private fun startBridge(
         if (mode == Mode.BLUETOOTH) putExtra(AudioService.EXTRA_BT_ADDRESS, btAddress)
     }
     ContextCompat.startForegroundService(context, intent)
+}
+
+@Composable
+private fun UpdateBanner(info: UpdateInfo, downloading: Boolean, onDismiss: () -> Unit, onUpdate: () -> Unit) {
+    ElevatedCard(
+        shape = RoundedCornerShape(18.dp),
+        modifier = Modifier.fillMaxWidth(),
+        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(Icons.Filled.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "Доступна версия ${info.version}",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(onClick = onUpdate, enabled = !downloading) {
+                    if (downloading) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Spacer(Modifier.width(8.dp))
+                        Text("Скачивается...")
+                    } else {
+                        Text("Обновить")
+                    }
+                }
+                TextButton(onClick = onDismiss, enabled = !downloading) { Text("Позже") }
+            }
+        }
+    }
 }
 
 @Composable
