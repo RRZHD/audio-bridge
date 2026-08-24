@@ -1,6 +1,10 @@
 # .NET
 pc-server/**/bin/
 pc-server/**/obj/
+pc-server/**/publish/
+
+# Installer build output
+installer/output/
 
 # Android / Gradle
 android-app/.gradle/
