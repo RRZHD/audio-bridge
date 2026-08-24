@@ -17,7 +17,11 @@ class BluetoothTransport(private val deviceAddress: String) : Transport {
     override fun connect(): OpenConnection {
         val adapter = BluetoothAdapter.getDefaultAdapter()
             ?: error("Bluetooth adapter not available")
-        adapter.cancelDiscovery()
+        // Deliberately no adapter.cancelDiscovery() here — it requires BLUETOOTH_SCAN (API 31+),
+        // a permission this app otherwise has no use for since it only ever connects to already-
+        // paired devices (see MainActivity.refreshPairedDevices, which just reads bondedDevices).
+        // Not calling it just means a connect attempt during an active scan may be slightly less
+        // reliable, which is an acceptable trade for not requesting an extra permission.
         val device = adapter.getRemoteDevice(deviceAddress)
         val socket = device.createRfcommSocketToServiceRecord(SERVICE_UUID)
         socket.connect()

@@ -109,7 +109,14 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
 
     val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
         if (results.values.all { it }) {
-            startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt())
+            // Starting the foreground service synchronously in this callback can race with
+            // ActivityManagerService's internal permission cache right after a fresh grant —
+            // it hasn't always caught up yet, so onStartCommand's startForeground(microphone)
+            // throws SecurityException even though the permission was just granted. A beat on
+            // the main looper gives it time to settle. See AudioService crash investigation.
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt())
+            }, 300)
         } else {
             status = "Нет разрешений (микрофон/Bluetooth/уведомления)"
         }

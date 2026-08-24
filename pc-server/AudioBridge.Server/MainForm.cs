@@ -191,7 +191,11 @@ public sealed class MainForm : Form
 
     private void OnClientAccepted(System.IO.Stream stream, string label)
     {
-        // Wi-Fi and USB (adb reverse) both get here — lossless raw codec, native format.
+        // Wi-Fi and USB (adb reverse) both stay lossless raw at the capture device's native
+        // format — USB is meant to be the highest-quality wired option, not a fallback. If it
+        // stutters, that's most likely adb-channel contention (e.g. a concurrent `adb logcat`/
+        // install sharing the same USB connection) rather than a hard adb-reverse bandwidth
+        // ceiling — worth ruling that out before trading away losslessness here.
         var pcCodec = new RawFloat32PcCodec();
         var micCodec = new RawPcm16MicCodec();
         AddSession(new ClientSession(stream, label, _engine, pcCodec, micCodec,

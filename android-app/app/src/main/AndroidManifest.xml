@@ -7,7 +7,10 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- In-app updater: installs the downloaded APK from GitHub Releases (not a Play Store install). -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <!-- Bluetooth: legacy permissions for API < 31, new runtime permission for API 31+ -->
     <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30" />
@@ -35,6 +38,19 @@
             android:name=".AudioService"
             android:foregroundServiceType="microphone|mediaPlayback"
             android:exported="false" />
+
+        <!-- Exposes the downloaded update APK (in app-specific external files dir) to the system
+             package installer via a content:// URI, as required since Android 7 (raw file:// URIs
+             crossing app boundaries are blocked). -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_provider_paths" />
+        </provider>
 
     </application>
 </manifest>
