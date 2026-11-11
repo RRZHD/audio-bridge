@@ -26,3 +26,4 @@ Thumbs.db
 
 # Third-party binaries fetched by installer/build.ps1 (checksum-pinned)
 installer/third-party/*.msi
+installer/third-party/vbcable-dl/

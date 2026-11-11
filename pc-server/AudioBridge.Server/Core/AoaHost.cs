@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -13,11 +13,11 @@ namespace AudioBridge.Server.Core;
 /// USB without adb and without USB tethering: the PC acts as an Android Open Accessory (AOA) host.
 ///
 /// 1. A known Android phone is found on the bus.
-/// 2. The PC asks it to switch into accessory mode (vendor control requests 51/52/53 вЂ” the phone
+/// 2. The PC asks it to switch into accessory mode (vendor control requests 51/52/53 — the phone
 ///    re-enumerates as Google 18D1:2D00/2D01).
 /// 3. The PC opens the accessory's two bulk endpoints and waits until the Audio Bridge app on the
 ///    phone has opened the accessory and sent its first frame.
-/// 4. From then on it is just a duplex byte stream carrying the usual wire protocol вЂ” a
+/// 4. From then on it is just a duplex byte stream carrying the usual wire protocol — a
 ///    <see cref="LibUsbStream"/> handed to <see cref="ClientSession"/> like a TCP stream.
 ///
 /// Needs UsbDk once (a signed driver that lets user mode talk to a device without replacing its
@@ -36,7 +36,7 @@ public sealed class AoaHost : IDisposable
     private const ushort GoogleVendor = 0x18D1;
     private static readonly HashSet<ushort> AccessoryProducts = new() { 0x2D00, 0x2D01, 0x2D04, 0x2D05 };
 
-    /// <summary>Vendors of Android phones. Only these are ever opened вЂ” never keyboards, drives, hubsвЂ¦</summary>
+    /// <summary>Vendors of Android phones. Only these are ever opened — never keyboards, drives, hubs…</summary>
     private static readonly HashSet<ushort> PhoneVendors = new()
     {
         0x0FCE, // Sony / Sony Mobile
@@ -144,7 +144,7 @@ public sealed class AoaHost : IDisposable
         }
         catch (Exception ex)
         {
-            log?.Invoke($"USB: РЅР°СЃС‚СЂРѕР№РєР° РЅРµ РІС‹РїРѕР»РЅРµРЅР° ({ex.Message})");
+            log?.Invoke($"USB: настройка не выполнена ({ex.Message})");
             return false;
         }
     }
@@ -184,22 +184,22 @@ public sealed class AoaHost : IDisposable
         var usbdkInstalled = IsUsbDkInstalled();
         if (!LibUsb.TryInit(out _ctx, out var error))
         {
-            Log?.Invoke($"USB: libusb РЅРµРґРѕСЃС‚СѓРїРЅР° ({error}) вЂ” USB-СЂРµР¶РёРј РѕС‚РєР»СЋС‡С‘РЅ");
-            SetStatus("USB РЅРµРґРѕСЃС‚СѓРїРµРЅ: РЅРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РїСѓСЃС‚РёС‚СЊ libusb");
+            Log?.Invoke($"USB: libusb недоступна ({error}) — USB-режим отключён");
+            SetStatus("USB недоступен: не удалось запустить libusb");
             return;
         }
         var usbdk = LibUsb.UsbDkActive;
         if (usbdk)
         {
-            Log?.Invoke("USB: РґСЂР°Р№РІРµСЂ UsbDk Р°РєС‚РёРІРµРЅ");
+            Log?.Invoke("USB: драйвер UsbDk активен");
         }
         else if (usbdkInstalled)
         {
-            Log?.Invoke($"USB: UsbDk СѓСЃС‚Р°РЅРѕРІР»РµРЅ, РЅРѕ libusb РµРіРѕ РЅРµ РїРѕРґС…РІР°С‚РёР» ({error}). Р•СЃР»Рё Windows РЅРµ РїРµСЂРµР·Р°РіСЂСѓР¶Р°Р»Р°СЃСЊ РїРѕСЃР»Рµ СѓСЃС‚Р°РЅРѕРІРєРё вЂ” РїРµСЂРµР·Р°РіСЂСѓР·Рё РµС‘.");
+            Log?.Invoke($"USB: UsbDk установлен, но libusb его не подхватил ({error}). Если Windows не перезагружалась после установки — перезагрузи её.");
         }
         else
         {
-            Log?.Invoke("USB: РґСЂР°Р№РІРµСЂ UsbDk РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ вЂ” С‚РµР»РµС„РѕРЅ РїРѕ USB РїРµСЂРµРєР»СЋС‡РёС‚СЊ РЅРµР»СЊР·СЏ");
+            Log?.Invoke("USB: драйвер UsbDk не установлен — телефон по USB переключить нельзя");
         }
 
         try
@@ -217,7 +217,7 @@ public sealed class AoaHost : IDisposable
                 }
                 catch (Exception ex)
                 {
-                    Log?.Invoke($"USB: РѕС€РёР±РєР° СЃРєР°РЅРёСЂРѕРІР°РЅРёСЏ: {ex.Message}");
+                    Log?.Invoke($"USB: ошибка сканирования: {ex.Message}");
                 }
                 // Right after the accessory switch the new device must be grabbed quickly.
                 ct.WaitHandle.WaitOne(DateTime.UtcNow < _fastScanUntil ? 150 : 1500);
@@ -245,35 +245,35 @@ public sealed class AoaHost : IDisposable
             var phone = devices.FirstOrDefault(d => IsPhoneCandidate(d.Descriptor));
             if (phone.Handle == IntPtr.Zero)
             {
-                SetStatus(usbdk ? "USB: С‚РµР»РµС„РѕРЅ РЅРµ РЅР°Р№РґРµРЅ вЂ” РїРѕРґРєР»СЋС‡Рё РєР°Р±РµР»СЊ" : "USB: UsbDk РЅРµ Р°РєС‚РёРІРµРЅ (СѓСЃС‚Р°РЅРѕРІРё РґСЂР°Р№РІРµСЂ / РїРµСЂРµР·Р°РіСЂСѓР·Рё Windows)");
+                SetStatus(usbdk ? "USB: телефон не найден — подключи кабель" : "USB: UsbDk не активен (установи драйвер / перезагрузи Windows)");
                 return;
             }
             if (!usbdk)
             {
-                SetStatus("USB: С‚РµР»РµС„РѕРЅ РЅР°Р№РґРµРЅ, РЅРѕ UsbDk РЅРµ Р°РєС‚РёРІРµРЅ (СѓСЃС‚Р°РЅРѕРІРё РґСЂР°Р№РІРµСЂ / РїРµСЂРµР·Р°РіСЂСѓР·Рё Windows)");
+                SetStatus("USB: телефон найден, но UsbDk не активен (установи драйвер / перезагрузи Windows)");
                 return;
             }
 
             // Don't hammer a phone that refused (or that is mid-way through re-enumerating).
             if (_cooldown.TryGetValue(phone.Key, out var until) && until > DateTime.UtcNow) return;
 
-            SetStatus($"USB: РЅР°Р№РґРµРЅ С‚РµР»РµС„РѕРЅ {phone.Id}, РїРµСЂРµРєР»СЋС‡Р°СЋ РІ СЂРµР¶РёРј Р°РєСЃРµСЃСЃСѓР°СЂР°вЂ¦");
+            SetStatus($"USB: найден телефон {phone.Id}, переключаю в режим аксессуара…");
             var rc = TrySwitchToAccessory(phone, out var detail);
             _cooldown[phone.Key] = DateTime.UtcNow.AddSeconds(rc ? 8 : 30);
             if (rc) _fastScanUntil = DateTime.UtcNow.AddSeconds(6);
             if (!rc)
             {
-                SetStatus($"USB: С‚РµР»РµС„РѕРЅ {phone.Id} РЅРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµРєР»СЋС‡РёС‚СЊ ({detail})");
+                SetStatus($"USB: телефон {phone.Id} не удалось переключить ({detail})");
                 var state = $"{phone.Key}:{detail}";
                 if (state != lastLoggedState)
                 {
                     lastLoggedState = state;
-                    Log?.Invoke($"USB: С‚РµР»РµС„РѕРЅ {phone.Id} РЅРµ РїРµСЂРµРєР»СЋС‡С‘РЅ: {detail}");
+                    Log?.Invoke($"USB: телефон {phone.Id} не переключён: {detail}");
                 }
             }
             else
             {
-                Log?.Invoke($"USB: С‚РµР»РµС„РѕРЅ {phone.Id} РїРµСЂРµРєР»СЋС‡С‘РЅ РІ СЂРµР¶РёРј Р°РєСЃРµСЃСЃСѓР°СЂР°");
+                Log?.Invoke($"USB: телефон {phone.Id} переключён в режим аксессуара");
             }
         }
         finally
@@ -298,7 +298,7 @@ public sealed class AoaHost : IDisposable
         if (rc != 0)
         {
             detail = rc == LibUsb.ErrorAccess || rc == LibUsb.ErrorNotSupported
-                ? $"РЅРµС‚ РґРѕСЃС‚СѓРїР° ({LibUsb.ErrorName(rc)}) вЂ” UsbDk РЅРµ Р°РєС‚РёРІРµРЅ?"
+                ? $"нет доступа ({LibUsb.ErrorName(rc)}) — UsbDk не активен?"
                 : LibUsb.ErrorName(rc);
             return false;
         }
@@ -308,13 +308,13 @@ public sealed class AoaHost : IDisposable
             rc = LibUsb.libusb_control_transfer(h, 0xC0, AoaGetProtocol, 0, 0, proto, 2, 1500);
             if (rc < 2)
             {
-                detail = $"С‚РµР»РµС„РѕРЅ РЅРµ РѕС‚РІРµС‚РёР» РЅР° AOA-Р·Р°РїСЂРѕСЃ ({LibUsb.ErrorName(rc)})";
+                detail = $"телефон не ответил на AOA-запрос ({LibUsb.ErrorName(rc)})";
                 return false;
             }
             var version = proto[0] | (proto[1] << 8);
             if (version < 1)
             {
-                detail = "С‚РµР»РµС„РѕРЅ РЅРµ РїРѕРґРґРµСЂР¶РёРІР°РµС‚ СЂРµР¶РёРј Р°РєСЃРµСЃСЃСѓР°СЂР°";
+                detail = "телефон не поддерживает режим аксессуара";
                 return false;
             }
 
@@ -325,14 +325,14 @@ public sealed class AoaHost : IDisposable
                 rc = LibUsb.libusb_control_transfer(h, 0x40, AoaSendString, 0, i, data, (ushort)data.Length, 1500);
                 if (rc < 0)
                 {
-                    detail = $"РЅРµ СѓРґР°Р»РѕСЃСЊ РїРµСЂРµРґР°С‚СЊ РёРґРµРЅС‚РёС„РёРєР°С†РёСЋ ({LibUsb.ErrorName(rc)})";
+                    detail = $"не удалось передать идентификацию ({LibUsb.ErrorName(rc)})";
                     return false;
                 }
             }
             rc = LibUsb.libusb_control_transfer(h, 0x40, AoaStart, 0, 0, null, 0, 1500);
             if (rc < 0)
             {
-                detail = $"РЅРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РїСѓСЃС‚РёС‚СЊ СЂРµР¶РёРј Р°РєСЃРµСЃСЃСѓР°СЂР° ({LibUsb.ErrorName(rc)})";
+                detail = $"не удалось запустить режим аксессуара ({LibUsb.ErrorName(rc)})";
                 return false;
             }
             detail = "ok";
@@ -351,7 +351,7 @@ public sealed class AoaHost : IDisposable
         var rc = LibUsb.libusb_open(dev.Handle, out var h);
         if (rc != 0)
         {
-            SetStatus($"USB: РЅРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РєСЂС‹С‚СЊ Р°РєСЃРµСЃСЃСѓР°СЂ ({LibUsb.ErrorName(rc)})");
+            SetStatus($"USB: не удалось открыть аксессуар ({LibUsb.ErrorName(rc)})");
             return;
         }
 
@@ -360,42 +360,42 @@ public sealed class AoaHost : IDisposable
         {
             if (!TryFindBulkEndpoints(h, out var iface, out var inEp, out var outEp, out var maxPacket))
             {
-                SetStatus("USB: Сѓ Р°РєСЃРµСЃСЃСѓР°СЂР° РЅРµ РЅР°Р№РґРµРЅС‹ bulk-СЌРЅРґРїРѕРёРЅС‚С‹");
+                SetStatus("USB: у аксессуара не найдены bulk-эндпоинты");
                 return;
             }
             rc = LibUsb.libusb_claim_interface(h, iface);
             if (rc != 0)
             {
-                SetStatus($"USB: РЅРµ СѓРґР°Р»РѕСЃСЊ Р·Р°РЅСЏС‚СЊ РёРЅС‚РµСЂС„РµР№СЃ ({LibUsb.ErrorName(rc)})");
+                SetStatus($"USB: не удалось занять интерфейс ({LibUsb.ErrorName(rc)})");
                 return;
             }
 
             stream = new LibUsbStream(h, iface, inEp, outEp, maxPacket);
-            SetStatus("USB: Р¶РґСѓ РїСЂРёР»РѕР¶РµРЅРёРµ Audio Bridge РЅР° С‚РµР»РµС„РѕРЅРµ (Р·Р°РїСѓСЃС‚Рё РµРіРѕ Рё РЅР°Р¶РјРё В«РџРѕРґРєР»СЋС‡РёС‚СЊСЃСЏВ» РІ СЂРµР¶РёРјРµ USB)вЂ¦");
+            SetStatus("USB: жду приложение Audio Bridge на телефоне (запусти его и нажми «Подключиться» в режиме USB)…");
 
             // The phone app sends CONFIG the moment it opens the accessory. Until then the endpoint
-            // would just NAK our audio вЂ” so don't announce a client before it speaks.
+            // would just NAK our audio — so don't announce a client before it speaks.
             while (!ct.IsCancellationRequested)
             {
                 var r = stream.Prefetch(500);
                 if (r > 0) break;
                 if (r < 0)
                 {
-                    SetStatus("USB: С‚РµР»РµС„РѕРЅ РѕС‚РєР»СЋС‡С‘РЅ");
+                    SetStatus("USB: телефон отключён");
                     return;
                 }
             }
             if (ct.IsCancellationRequested) return;
 
-            SetStatus("USB: РїРѕРґРєР»СЋС‡РµРЅРѕ (РєР°Р±РµР»СЊ)");
-            Log?.Invoke("USB: РїСЂРёР»РѕР¶РµРЅРёРµ РЅР° С‚РµР»РµС„РѕРЅРµ РїРѕРґРєР»СЋС‡РёР»РѕСЃСЊ (СЂРµР¶РёРј Р°РєСЃРµСЃСЃСѓР°СЂР°)");
+            SetStatus("USB: подключено (кабель)");
+            Log?.Invoke("USB: приложение на телефоне подключилось (режим аксессуара)");
             var closed = new ManualResetEventSlim(false);
             stream.Closed += () => closed.Set();
-            ClientAccepted?.Invoke(stream, "USB (РєР°Р±РµР»СЊ)");
+            ClientAccepted?.Invoke(stream, "USB (кабель)");
 
             // Hold the device until the session ends, so we don't open it twice.
             while (!closed.Wait(500, ct)) { }
-            SetStatus("USB: СЃРµР°РЅСЃ Р·Р°РІРµСЂС€С‘РЅ");
+            SetStatus("USB: сеанс завершён");
             Thread.Sleep(1000); // give the phone side time to reopen before we claim again
         }
         finally
