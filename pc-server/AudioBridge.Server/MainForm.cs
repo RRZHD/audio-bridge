@@ -18,6 +18,7 @@ public sealed class MainForm : Form
     private readonly BluetoothServerListener _bt = new();
     private readonly DiscoveryResponder _discovery = new();
     private readonly AoaHost _aoa = new();
+    private readonly VolumeSync _volume = new();
     private readonly List<ClientSession> _sessions = new();
     private readonly object _sessionsLock = new();
 
@@ -75,6 +76,10 @@ public sealed class MainForm : Form
         _aoa.Log += AppendLog;
         _aoa.ClientAccepted += OnClientAccepted;
         _aoa.StatusChanged += s => { if (IsHandleCreated) BeginInvoke(() => _usbStatus.Text = s); };
+        _volume.Changed += (level, muted) =>
+        {
+            lock (_sessionsLock) { foreach (var s in _sessions) s.SendVolume(level, muted); }
+        };
         _bt.ClientAccepted += OnBluetoothClientAccepted;
 
         FormClosing += (_, _) => StopAll();
@@ -340,6 +345,7 @@ public sealed class MainForm : Form
 
             // Capture/TCP are core — a failure here really should stop the whole start attempt.
             _engine.StartCapture(captureDevice);
+            _volume.Attach(captureDevice ?? new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console));
             if (playMic) _engine.StartMicPlayback(micOutDevice);
             _tcp.Start(port);
 
@@ -376,6 +382,7 @@ public sealed class MainForm : Form
             foreach (var s in _sessions.ToArray()) s.Disconnect();
             _sessions.Clear();
         }
+        _volume.Detach();
         _engine.StopCapture();
         _engine.StopMicPlayback();
 
@@ -414,6 +421,12 @@ public sealed class MainForm : Form
     {
         lock (_sessionsLock) { _sessions.Add(session); }
         session.Log += AppendLog;
+        session.VolumeReceived += _volume.SetFromPhone;
+        session.MediaCommand += cmd =>
+        {
+            var what = MediaKeys.Press(cmd);
+            if (what != null) AppendLog($"Кнопка на наушниках телефона: {what}");
+        };
         session.Changed += _ => BeginInvoke(RefreshSessionsList); // the phone's name arrives after connect
         session.Disconnected += s =>
         {

@@ -11,6 +11,8 @@ public enum FrameType : byte
     AudioMic = 0x02,
     Format = 0x03,
     Config = 0x04,
+    Volume = 0x05, // u8 level 0..100, u8 flags (bit0 = muted) — both directions
+    Media = 0x06,  // u8 command: 1 = play/pause, 2 = next, 3 = previous — phone headset button -> PC media key
     Ping = 0xFF,
 }
 

@@ -12,6 +12,8 @@ object FrameType {
     const val AUDIO_MIC: Byte = 0x02
     const val FORMAT: Byte = 0x03
     const val CONFIG: Byte = 0x04
+    const val VOLUME: Byte = 0x05 // u8 level 0..100, u8 flags (bit0 = muted) — both directions
+    const val MEDIA: Byte = 0x06 // u8 command: 1 = play/pause, 2 = next, 3 = previous (phone -> PC)
     const val PING: Byte = 0xFF.toByte()
 }
 

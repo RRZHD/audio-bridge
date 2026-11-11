@@ -31,6 +31,12 @@ public sealed class ClientSession : IDisposable
 
     public event Action<string>? Log;
 
+    /// <summary>The phone's media volume changed (0..100, muted).</summary>
+    public event Action<int, bool>? VolumeReceived;
+
+    /// <summary>A headset button on the phone: 1 = play/pause, 2 = next, 3 = previous.</summary>
+    public event Action<byte>? MediaCommand;
+
     private readonly Stream _stream;
     private readonly AudioEngine _engine;
     private readonly IPcAudioCodec _pcCodec;
@@ -163,6 +169,15 @@ public sealed class ClientSession : IDisposable
         Disconnect();
     }
 
+    /// <summary>Tell the phone the Windows volume changed.</summary>
+    public void SendVolume(int level, bool muted)
+    {
+        if (!IsConnected) return;
+        var payload = new[] { (byte)Math.Clamp(level, 0, 100), (byte)(muted ? 1 : 0) };
+        _ = FrameIO.WriteFrameAsync(_stream, FrameType.Volume, payload, _writeLock, _cts.Token)
+            .ContinueWith(t => { var _ = t.Exception; }, TaskContinuationOptions.OnlyOnFaulted);
+    }
+
     private async Task SendPingIfIdleAsync()
     {
         if (!IsConnected) return;
@@ -196,6 +211,14 @@ public sealed class ClientSession : IDisposable
                 {
                     var decoded = _micCodec.Decode(frame.Payload, _micDecodeScratch);
                     _engine.PlayMicSamples(_micDecodeScratch, decoded);
+                }
+                else if (frame.Type == FrameType.Media && frame.Payload.Length >= 1)
+                {
+                    MediaCommand?.Invoke(frame.Payload[0]);
+                }
+                else if (frame.Type == FrameType.Volume && frame.Payload.Length >= 2)
+                {
+                    VolumeReceived?.Invoke(Math.Min(frame.Payload[0], (byte)100), (frame.Payload[1] & 1) != 0);
                 }
                 else if (frame.Type == FrameType.Config && frame.Payload.Length >= 4)
                 {

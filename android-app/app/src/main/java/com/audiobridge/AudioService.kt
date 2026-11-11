@@ -125,6 +125,9 @@ class AudioService : Service() {
                     runSession(transport.kind, conn, pcBitrate, micBitrate, bufferMs, Settings(applicationContext).maxRawSampleRate)
                 } finally {
                     releaseLocks()
+                    // However the session ended (even by an exception) the link must be released, or an
+                    // accessory stays open and every later open fails with "could not open /dev/usb_accessory".
+                    try { conn.closeable.close() } catch (_: Exception) { }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "session error", e)
@@ -209,10 +212,28 @@ class AudioService : Service() {
         // 48kHz/stereo Opus/Bluetooth path.
         var pcInterleavedScratch = FloatArray(4096)
 
+        // Volume mirrors the PC slider both ways. Created before closeSession so it can be stopped there.
+        val volumeSync = VolumeSync(applicationContext) { level, muted ->
+            synchronized(writeLock) {
+                FrameIO.writeFrame(conn.output, FrameType.VOLUME, byteArrayOf(level.toByte(), if (muted) 1 else 0))
+            }
+        }
+
+        // Headset button -> PC media key (play/pause, next, previous).
+        val headset = HeadsetControl(applicationContext) { command ->
+            try {
+                synchronized(writeLock) {
+                    FrameIO.writeFrame(conn.output, FrameType.MEDIA, byteArrayOf(command.toByte()))
+                }
+            } catch (_: Exception) { /* session is going away */ }
+        }
+
         fun closeSession() {
             if (!sessionAlive.compareAndSet(true, false)) return
             try { conn.closeable.close() } catch (_: IOException) { /* ignore */ }
             playout.getAndSet(null)?.release()
+            volumeSync.stop()
+            headset.stop()
         }
 
         // Reader thread: FORMAT + AUDIO_PC frames -> jitter buffer -> AudioTrack.
@@ -271,6 +292,9 @@ class AudioService : Service() {
                                 StatusBus.postLog(line)
                             }
                         }
+                        FrameType.VOLUME -> if (frame.payload.size >= 2) {
+                            volumeSync.applyFromPc(frame.payload[0].toInt() and 0xFF, (frame.payload[1].toInt() and 1) != 0)
+                        }
                         else -> { /* PING / unknown: no-op, already refreshed lastRecvAt above */ }
                     }
                 }
@@ -279,6 +303,16 @@ class AudioService : Service() {
                 StatusBus.postLog("Reader stopped: $e")
             }
             closeSession()
+        }
+
+        // Send the phone's volume to the PC now (so neither side jumps) and follow volume-key changes.
+        try {
+            volumeSync.start()
+            headset.start()
+        } catch (e: Exception) {
+            // Volume sync / headset button are extras: never let them take the audio session down.
+            Log.e(TAG, "extras failed", e)
+            StatusBus.postLog("Громкость/кнопка наушников недоступны: $e")
         }
 
         // Mic thread: AudioRecord -> AUDIO_MIC frames. Off unless the user switched it on — a phone

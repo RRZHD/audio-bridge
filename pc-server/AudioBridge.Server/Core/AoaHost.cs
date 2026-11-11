@@ -73,6 +73,7 @@ public sealed class AoaHost : IDisposable
     private readonly Dictionary<string, DateTime> _cooldown = new();
     private string _status = "";
     private DateTime _fastScanUntil = DateTime.MinValue;
+    private string _lastSeen = "";
 
     public event Action<Stream, string>? ClientAccepted;
     public event Action<string>? Log;
@@ -233,6 +234,11 @@ public sealed class AoaHost : IDisposable
     private void ScanOnce(bool usbdk, CancellationToken ct, ref string? lastLoggedState)
     {
         var devices = LibUsb.ListDevices(_ctx, out var raw);
+        if (DateTime.UtcNow < _fastScanUntil)
+        {
+            var seen = string.Join(" ", devices.Where(d => d.Descriptor.idVendor is 0x0FCE or GoogleVendor).Select(d => d.Id));
+            if (seen != _lastSeen) { _lastSeen = seen; Log?.Invoke($"USB: после переключения на шине: {(seen == "" ? "ничего" : seen)}"); }
+        }
         try
         {
             var accessory = devices.FirstOrDefault(d => d.Descriptor.idVendor == GoogleVendor && AccessoryProducts.Contains(d.Descriptor.idProduct));
