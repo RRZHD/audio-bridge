@@ -4,7 +4,7 @@ import java.io.Closeable
 import java.io.InputStream
 import java.io.OutputStream
 
-enum class TransportKind { WIFI, USB, BLUETOOTH }
+enum class TransportKind { WIFI, USB, BLUETOOTH, BLE }
 
 data class OpenConnection(val input: InputStream, val output: OutputStream, val closeable: Closeable)
 

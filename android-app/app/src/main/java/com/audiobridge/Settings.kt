@@ -43,6 +43,11 @@ class Settings(context: Context) {
         get() = prefs.getInt("max_raw_rate", DEFAULT_MAX_RAW_RATE)
         set(value) = prefs.edit().putInt("max_raw_rate", value).apply()
 
+    /** Wi-Fi stream quality: 0 = auto (lossless, drops to Opus when the link cannot keep up), 1 = lossless only, 2 = compressed. */
+    var wifiQuality: Int
+        get() = prefs.getInt("wifi_quality", 0)
+        set(value) = prefs.edit().putInt("wifi_quality", value).apply()
+
     /** Send this phone's microphone to the PC. Off by default (privacy; also avoids surprise playback). */
     var micEnabled: Boolean
         get() = prefs.getBoolean("mic_enabled", false)

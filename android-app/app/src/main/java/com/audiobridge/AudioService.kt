@@ -18,6 +18,7 @@ import android.os.Process
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import com.audiobridge.transport.BleTransport
 import com.audiobridge.transport.BluetoothTransport
 import com.audiobridge.transport.OpenConnection
 import com.audiobridge.transport.Transport
@@ -43,12 +44,19 @@ class AudioService : Service() {
         const val EXTRA_MIC_BITRATE = "mic_bitrate"
         const val EXTRA_BUFFER_MS = "buffer_ms"
 
-        const val DEFAULT_PC_BITRATE = 320_000
+        const val DEFAULT_PC_BITRATE = 192_000
         const val DEFAULT_MIC_BITRATE = 32_000
         const val DEFAULT_BUFFER_MS = PlayoutBuffer.DEFAULT_TARGET_MS
+        // Bluetooth stalls 100-250 ms at a time (measured): a buffer shallower than that audibly breaks.
+        const val BT_MIN_BUFFER_MS = 400
+        const val BT_MAX_TARGET_MS = 1000
+        const val BT_OVERFLOW_SLACK_MS = 250
+        const val BT_GROW_STEP_MS = 100
+        // LE connection events are regular: a modest cushion is enough, and it still grows on demand.
+        const val BLE_MIN_BUFFER_MS = 120
 
         private const val TAG = "AudioBridge"
-        private const val STATS_INTERVAL_MS = 10_000L
+        private const val STATS_INTERVAL_MS = 5_000L
         private const val CHANNEL_ID = "audio_bridge_channel"
         private const val NOTIFICATION_ID = 1
 
@@ -60,8 +68,11 @@ class AudioService : Service() {
         const val DEAD_CONNECTION_MS = 9000L
     }
 
-    private val running = AtomicBoolean(false)
+    // One flag per worker: starting a new connection (e.g. switching USB -> Bluetooth) retires the old
+    // worker, which may still be blocked in a connect() and must not keep reconnecting afterwards.
+    @Volatile private var running = AtomicBoolean(false)
     private var workerThread: Thread? = null
+    private var currentMode: String? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -73,7 +84,7 @@ class AudioService : Service() {
 
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: return START_NOT_STICKY
         val host = intent.getStringExtra(EXTRA_HOST) ?: ""
-        val port = intent.getIntExtra(EXTRA_PORT, 57120)
+        val port = intent.getIntExtra(EXTRA_PORT, 45121)
         val btAddress = intent.getStringExtra(EXTRA_BT_ADDRESS) ?: ""
         val pcBitrate = intent.getIntExtra(EXTRA_PC_BITRATE, DEFAULT_PC_BITRATE)
         val micBitrate = intent.getIntExtra(EXTRA_MIC_BITRATE, DEFAULT_MIC_BITRATE)
@@ -84,17 +95,25 @@ class AudioService : Service() {
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         )
 
-        if (running.get()) return START_STICKY
+        // Already running with the same request: nothing to do. A different mode replaces the old worker.
+        if (running.get() && mode == currentMode) return START_STICKY
+        if (running.get()) {
+            running.set(false)
+            workerThread?.interrupt()
+        }
 
         val transport: Transport = when (mode) {
             "WIFI" -> WifiTransport(host, port)
             "USB" -> UsbTransport(applicationContext)
             "BLUETOOTH" -> BluetoothTransport(btAddress)
+            "BLE" -> BleTransport(applicationContext)
             else -> return START_NOT_STICKY
         }
 
-        running.set(true)
-        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate, bufferMs) }
+        currentMode = mode
+        val alive = AtomicBoolean(true)
+        running = alive
+        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate, bufferMs, alive) }
         return START_STICKY
     }
 
@@ -113,8 +132,8 @@ class AudioService : Service() {
         super.onDestroy()
     }
 
-    private fun runLoop(transport: Transport, pcBitrate: Int, micBitrate: Int, bufferMs: Int) {
-        while (running.get()) {
+    private fun runLoop(transport: Transport, pcBitrate: Int, micBitrate: Int, bufferMs: Int, alive: AtomicBoolean) {
+        while (alive.get()) {
             try {
                 StatusBus.postStatus("Подключение (${transport.kind})...")
                 val conn = transport.connect()
@@ -133,7 +152,7 @@ class AudioService : Service() {
                 Log.e(TAG, "session error", e)
                 StatusBus.postLog("Ошибка соединения: $e")
             }
-            if (!running.get()) break
+            if (!alive.get()) break
             StatusBus.postStatus("Переподключение...")
             updateNotification("Переподключение...")
             try {
@@ -186,19 +205,26 @@ class AudioService : Service() {
         wakeLock = null
     }
 
-    private fun runSession(kind: TransportKind, conn: OpenConnection, pcBitrate: Int, micBitrate: Int, bufferMs: Int, maxRawRate: Int) {
+    private fun runSession(kind: TransportKind, conn: OpenConnection, pcBitrate: Int, micBitrate: Int, requestedBufferMs: Int, maxRawRate: Int) {
+        // Bluetooth jitter is an order of magnitude worse than Wi-Fi/USB: never start it below 250 ms
+        // (the buffer still shrinks back by itself when the link proves stable).
+        val bufferMs = when (kind) {
+            TransportKind.BLUETOOTH -> maxOf(requestedBufferMs, BT_MIN_BUFFER_MS)
+            TransportKind.BLE -> maxOf(requestedBufferMs, BLE_MIN_BUFFER_MS)
+            else -> requestedBufferMs
+        }
         val writeLock = Any()
         val sessionAlive = AtomicBoolean(true)
         val lastRecvAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
 
-        val micCodec: MicAudioCodec = if (kind == TransportKind.BLUETOOTH)
+        val micCodec: MicAudioCodec = if (kind == TransportKind.BLUETOOTH || kind == TransportKind.BLE)
             OpusMicCodec(MIC_SAMPLE_RATE, micBitrate) else RawPcm16MicCodec()
 
         // Tell the PC what bitrate to use for its Opus encoder (only takes effect if this session
         // ends up on the Opus/Bluetooth path — ignored by the raw Wi-Fi/USB path). See PROTOCOL.md.
         try {
             synchronized(writeLock) {
-                FrameIO.writeFrame(conn.output, FrameType.CONFIG, FrameIO.buildConfigPayload(pcBitrate, maxRawRate, deviceName()))
+                FrameIO.writeFrame(conn.output, FrameType.CONFIG, FrameIO.buildConfigPayload(pcBitrate, maxRawRate, deviceName(), Settings(applicationContext).wifiQuality))
             }
         } catch (e: Exception) {
             StatusBus.postLog("Не удалось отправить CONFIG: ${e.message}")
@@ -242,6 +268,13 @@ class AudioService : Service() {
             // Frames are 5-byte header + payload: read through a buffer, not one tiny syscall each.
             val input = BufferedInputStream(conn.input, 64 * 1024)
             var lastStatsAt = System.currentTimeMillis()
+            // Link health, reported with the buffer stats: how long the stream paused between audio
+            // frames and how long handling one frame took (tells a slow radio from a slow phone).
+            var linkBytes = 0L
+            var linkFrames = 0
+            var linkMaxGapMs = 0L
+            var linkMaxProcMs = 0L
+            var linkLastAudioAt = 0L
             try {
                 while (sessionAlive.get()) {
                     val frame = FrameIO.readFrame(input)
@@ -258,8 +291,14 @@ class AudioService : Service() {
                                 pcInterleavedScratch = FloatArray(neededSamples)
                             }
                             streamRate = fmt.sampleRate
+                            val bt = kind == TransportKind.BLUETOOTH
                             playout.getAndSet(
-                                PlayoutBuffer(
+                                if (bt) PlayoutBuffer(
+                                    AudioTrackSink(createPlaybackTrack(fmt.sampleRate, fmt.channels, BT_MAX_TARGET_MS + BT_OVERFLOW_SLACK_MS + 100)),
+                                    fmt.sampleRate, fmt.channels, bufferMs,
+                                    onEvent = { StatusBus.postLog(it) },
+                                    maxTargetMs = BT_MAX_TARGET_MS, overflowSlackMs = BT_OVERFLOW_SLACK_MS, growStepMs = BT_GROW_STEP_MS,
+                                ) else PlayoutBuffer(
                                     AudioTrackSink(createPlaybackTrack(fmt.sampleRate, fmt.channels)),
                                     fmt.sampleRate, fmt.channels, bufferMs,
                                     onEvent = { StatusBus.postLog(it) },
@@ -271,10 +310,16 @@ class AudioService : Service() {
                             val codec = pcCodec ?: continue
                             val buffer = playout.get() ?: continue
                             // decode() returns INTERLEAVED samples — write exactly that many.
+                            val arrivedAt = System.currentTimeMillis()
+                            if (linkLastAudioAt != 0L) linkMaxGapMs = maxOf(linkMaxGapMs, arrivedAt - linkLastAudioAt)
+                            linkLastAudioAt = arrivedAt
+                            linkBytes += frame.payload.size + 5
+                            linkFrames++
                             val samples = codec.decode(frame.payload, pcInterleavedScratch)
                             if (!buffer.write(pcInterleavedScratch, samples)) {
                                 throw IOException("AudioTrack write failed")
                             }
+                            linkMaxProcMs = maxOf(linkMaxProcMs, System.currentTimeMillis() - arrivedAt)
                             if (buffer.isStalled()) {
                                 // The output accepted the track but isn't consuming it. If we were
                                 // asked for a high rate, drop to 48 kHz for next time and reconnect.
@@ -286,8 +331,10 @@ class AudioService : Service() {
                             }
                             val now = System.currentTimeMillis()
                             if (now - lastStatsAt >= STATS_INTERVAL_MS) {
+                                val kbps = linkBytes * 8 / maxOf(1L, now - lastStatsAt)
                                 lastStatsAt = now
-                                val line = buffer.statsLine()
+                                val line = buffer.statsLine() + "; канал: $kbps кбит/с, кадров $linkFrames, макс. пауза $linkMaxGapMs мс, макс. обработка $linkMaxProcMs мс"
+                                linkBytes = 0; linkFrames = 0; linkMaxGapMs = 0; linkMaxProcMs = 0
                                 Log.i(TAG, line)
                                 StatusBus.postLog(line)
                             }

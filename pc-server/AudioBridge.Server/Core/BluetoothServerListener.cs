@@ -48,6 +48,10 @@ public sealed class BluetoothServerListener : IDisposable
             try
             {
                 var client = await Task.Run(() => listener.AcceptBluetoothClient(), ct).ConfigureAwait(false);
+                // A small socket send buffer makes a stalled radio link push back on the writer (and so on
+                // the bounded queue, which drops/adapts) instead of hiding seconds of audio in the stack.
+                try { client.Client.SendBufferSize = 4096; Log?.Invoke($"Bluetooth: буфер отправки {client.Client.SendBufferSize} байт"); }
+                catch (Exception ex) { Log?.Invoke($"Bluetooth: не удалось уменьшить буфер отправки: {ex.Message}"); }
                 var label = $"Bluetooth ({client.RemoteMachineName})";
                 Log?.Invoke($"Client connected: {label}");
                 ClientAccepted?.Invoke(client.GetStream(), label);

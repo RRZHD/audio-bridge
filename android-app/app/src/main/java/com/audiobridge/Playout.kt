@@ -45,6 +45,10 @@ class PlayoutBuffer(
     private val channels: Int,
     initialTargetMs: Int,
     private val onEvent: (String) -> Unit = {},
+    /** Bluetooth stalls for 100-250 ms at a time: it needs a deeper ceiling, more slack and bigger steps. */
+    private val maxTargetMs: Int = MAX_TARGET_MS,
+    private val overflowSlackMs: Int = OVERFLOW_SLACK_MS,
+    private val growStepMs: Int = GROW_STEP_MS,
     private val clock: () -> Long = System::currentTimeMillis,
 ) {
     companion object {
@@ -54,11 +58,14 @@ class PlayoutBuffer(
         const val OVERFLOW_SLACK_MS = 80
         /** If the hardware has not consumed a single frame this long after play(), it is not playing this stream. */
         const val STALL_AFTER_MS = 2500L
-        private const val GROW_STEP_MS = 40
+        const val GROW_STEP_MS = 40
         private const val UNDERRUN_THRESHOLD_MS = 4
+        private const val DECAY_AFTER_MS = 20_000L
+        private const val DECAY_EVERY_MS = 4_000L
+        private const val DECAY_STEP_MS = 20
     }
 
-    var targetMs: Int = initialTargetMs.coerceIn(MIN_TARGET_MS, MAX_TARGET_MS)
+    var targetMs: Int = initialTargetMs.coerceIn(MIN_TARGET_MS, maxTargetMs)
         private set
     var underruns = 0
         private set
@@ -70,6 +77,9 @@ class PlayoutBuffer(
     private var started = false
     private var playStartedAtMs = 0L
     private var trimming = false
+    private val baseTargetMs = initialTargetMs.coerceIn(MIN_TARGET_MS, maxTargetMs)
+    private var lastUnderrunAtMs = 0L
+    private var lastDecayAtMs = 0L
     private val silenceFrames = framesFor(50)
     private val silence = FloatArray(silenceFrames * channels)
 
@@ -91,9 +101,11 @@ class PlayoutBuffer(
         }
 
         val buffered = bufferedFrames()
+        decayTargetIfStable()
         if (buffered <= framesFor(UNDERRUN_THRESHOLD_MS)) {
             underruns++
-            targetMs = min(MAX_TARGET_MS, targetMs + GROW_STEP_MS)
+            targetMs = min(maxTargetMs, targetMs + growStepMs)
+            lastUnderrunAtMs = clock()
             onEvent("Недогрузка буфера (#$underruns) — цель теперь $targetMs мс")
             writeSilence(max(0L, framesFor(targetMs) - buffered).toInt())
         } else {
@@ -101,7 +113,7 @@ class PlayoutBuffer(
             // play(), during which chunks keep arriving). Once the queue passes target + slack, skip
             // incoming chunks until it is back near the target — not merely back under the
             // threshold, or the stream would sit at the threshold (~200 ms) forever.
-            if (buffered > framesFor(targetMs + OVERFLOW_SLACK_MS)) trimming = true
+            if (buffered > framesFor(targetMs + overflowSlackMs)) trimming = true
             if (trimming) {
                 if (buffered > framesFor(targetMs) + sampleCount / channels) {
                     dropped++
@@ -125,6 +137,21 @@ class PlayoutBuffer(
         "буфер ${bufferedMs()} мс (цель $targetMs), недогрузок $underruns, сброшено $dropped; ${sink.diagnostics()}"
 
     fun release() = sink.release()
+
+    /**
+     * After an underrun the target grows; it must also come back down, or one bad moment on a
+     * Bluetooth link would leave the stream at 400+ ms of latency for good. With no underrun for
+     * [DECAY_AFTER_MS] the target eases back toward the configured value, [DECAY_STEP_MS] at a time.
+     * The surplus drains through the existing overflow trimming (skipped chunks), not a hard cut.
+     */
+    private fun decayTargetIfStable() {
+        if (targetMs <= baseTargetMs) return
+        val now = clock()
+        val quietSince = max(lastUnderrunAtMs, playStartedAtMs)
+        if (now - quietSince < DECAY_AFTER_MS || now - lastDecayAtMs < DECAY_EVERY_MS) return
+        lastDecayAtMs = now
+        targetMs = max(baseTargetMs, targetMs - DECAY_STEP_MS)
+    }
 
     private fun writeSilence(frames: Int) {
         var remaining = frames
@@ -179,7 +206,7 @@ class AudioTrackSink(private val track: AudioTrack) : PlayoutSink {
 }
 
 /** Creates the output track with room for the deepest jitter buffer plus overflow headroom. */
-fun createPlaybackTrack(sampleRate: Int, channels: Int): AudioTrack {
+fun createPlaybackTrack(sampleRate: Int, channels: Int, capacityMs: Int = PlayoutBuffer.MAX_TARGET_MS + PlayoutBuffer.OVERFLOW_SLACK_MS + 100): AudioTrack {
     val channelMask = if (channels >= 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
     val format = AudioFormat.Builder()
         .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
@@ -191,7 +218,6 @@ fun createPlaybackTrack(sampleRate: Int, channels: Int): AudioTrack {
         .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
         .build()
     val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_FLOAT)
-    val capacityMs = PlayoutBuffer.MAX_TARGET_MS + PlayoutBuffer.OVERFLOW_SLACK_MS + 100
     val bytes = (sampleRate.toLong() * capacityMs / 1000 * channels * 4).toInt()
     return AudioTrack.Builder()
         .setAudioAttributes(attrs)

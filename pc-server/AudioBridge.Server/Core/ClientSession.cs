@@ -14,6 +14,11 @@ public sealed class ClientSession : IDisposable
     /// Bounds latency: a stalled network costs a short glitch instead of ever-growing delay.</summary>
     public const int MaxQueuedChunks = 15;
 
+    private const int MinOpusBitrate = 64_000;
+
+    /// <summary>Bluetooth stalls for 100-250 ms (measured) and then delivers in a burst: the queue must ride that out.</summary>
+    public const int MaxQueuedChunksBluetooth = 40;
+
     /// <summary>How long to wait for the phone's CONFIG before sending FORMAT with defaults.</summary>
     private const int ConfigWaitMs = 1500;
 
@@ -39,11 +44,16 @@ public sealed class ClientSession : IDisposable
 
     private readonly Stream _stream;
     private readonly AudioEngine _engine;
-    private readonly IPcAudioCodec _pcCodec;
+    private IPcAudioCodec _pcCodec;
     private readonly IMicAudioCodec _micCodec;
-    private readonly int _pcSampleRate;
-    private readonly int _pcChannels;
-    private readonly bool _useNativeFormat;
+    private int _pcSampleRate;
+    private int _pcChannels;
+    private bool _useNativeFormat;
+    private bool _subscribed; // the engine event for the current format is hooked up
+    private volatile int _compressPref; // from CONFIG: 0 = auto, 1 = always lossless, 2 = always compressed (Opus)
+    private int _configBitrate = 192_000;
+    private int _switchRequested;
+    private readonly Queue<(long Ticks, long Dropped)> _dropWindow = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
     private readonly short[] _micDecodeScratch = new short[AudioEngine.MicSampleRate / 10];
@@ -73,7 +83,7 @@ public sealed class ClientSession : IDisposable
         _pcChannels = pcChannels;
         _useNativeFormat = useNativeFormat;
         _queue = Channel.CreateBounded<PcAudioChunk>(
-            new BoundedChannelOptions(MaxQueuedChunks)
+            new BoundedChannelOptions(useNativeFormat ? MaxQueuedChunks : MaxQueuedChunksBluetooth)
             {
                 FullMode = BoundedChannelFullMode.DropOldest,
                 SingleReader = true,
@@ -111,6 +121,37 @@ public sealed class ClientSession : IDisposable
         }
     }
 
+    /// <summary>
+    /// Moves this session from the lossless raw stream to Opus at 48 kHz stereo: the link could not
+    /// carry ~3 Mbit/s (the queue kept overflowing), and a compressed stream that arrives is better
+    /// than a lossless one that stutters. Called on the writer thread; the phone is told by a new FORMAT.
+    /// </summary>
+    private async Task SwitchToOpusAsync(string reason)
+    {
+        if (!_useNativeFormat) return;
+        if (_subscribed)
+        {
+            _engine.PcChunkReady -= OnPcChunkReady;
+            _engine.PcChunkReady48kStereo += OnPcChunkReady;
+        }
+        _useNativeFormat = false;
+        _rawConv = null;
+        while (_queue.Reader.TryRead(out _)) { } // raw chunks must not reach the Opus encoder
+        _pcSampleRate = AudioEngine.BtSampleRate;
+        _pcChannels = AudioEngine.BtChannels;
+        _pcCodec = new OpusPcCodec(_pcSampleRate, _pcChannels, _configBitrate);
+        Log?.Invoke($"{Label}: {reason} — перехожу на сжатие Opus {_configBitrate / 1000} кбит/с");
+
+        if (_subscribed)
+        {
+            var payload = new byte[8];
+            BitConverter.TryWriteBytes(payload.AsSpan(0, 4), _pcSampleRate);
+            payload[4] = (byte)_pcChannels;
+            payload[5] = (byte)_pcCodec.Kind;
+            await FrameIO.WriteFrameAsync(_stream, FrameType.Format, payload, _writeLock, _cts.Token).ConfigureAwait(false);
+        }
+    }
+
     private async Task WriterLoopAsync()
     {
         try
@@ -118,6 +159,11 @@ public sealed class ClientSession : IDisposable
             // The phone says up front what it can play (and its name); wait briefly so FORMAT can
             // reflect that instead of guessing. Clients that never send CONFIG just get defaults.
             await Task.WhenAny(_configReceived.Task, Task.Delay(ConfigWaitMs, _cts.Token)).ConfigureAwait(false);
+
+            // The app can ask for compression outright (Wi-Fi quality setting); "auto" starts lossless and
+            // falls back to Opus by itself when the link cannot carry it (see the drop monitor).
+            if (_compressPref == 2 && _useNativeFormat && _pcCodec.Kind == PcAudioCodecKind.PcmFloat32)
+                await SwitchToOpusAsync("по настройке приложения").ConfigureAwait(false);
 
             var rate = _pcSampleRate;
             var channels = _pcChannels;
@@ -147,15 +193,99 @@ public sealed class ClientSession : IDisposable
             // Only now start receiving audio, so nothing can precede FORMAT.
             if (_useNativeFormat) _engine.PcChunkReady += OnPcChunkReady;
             else _engine.PcChunkReady48kStereo += OnPcChunkReady;
+            _subscribed = true;
+
+            // Opus (Bluetooth) is rate-controlled: the radio link's capacity varies, and a fixed high
+            // bitrate on a link that cannot carry it just piles up latency and then drops audio.
+            var adaptive = _pcCodec.Kind == PcAudioCodecKind.Opus;
+            var maxBitrate = _configBitrate;
+            var curBitrate = maxBitrate;
+            var lastChangeMs = Environment.TickCount64;
+            var lastCongestedMs = 0L;
+            var deepSinceMs = 0L;
+            var statsAtMs = Environment.TickCount64;
+            long statBytes = 0;
+            double statMaxWriteMs = 0;
+            var statMinBitrate = curBitrate;
 
             await foreach (var chunk in _queue.Reader.ReadAllAsync(_cts.Token).ConfigureAwait(false))
             {
+                if (Interlocked.Exchange(ref _switchRequested, 0) == 1)
+                {
+                    await SwitchToOpusAsync("канал не успевает передавать поток без сжатия").ConfigureAwait(false);
+                    adaptive = true;
+                    maxBitrate = _configBitrate;
+                    curBitrate = maxBitrate;
+                    statMinBitrate = curBitrate;
+                    lastChangeMs = Environment.TickCount64;
+                    continue; // this chunk is raw: drop it, the next ones come from the 48 kHz stream
+                }
+
                 var bitrate = Interlocked.Exchange(ref _pendingBitrate, 0);
-                if (bitrate > 0) _pcCodec.SetBitrate(bitrate);
+                if (bitrate > 0)
+                {
+                    maxBitrate = bitrate;
+                    curBitrate = Math.Min(curBitrate, maxBitrate);
+                    _pcCodec.SetBitrate(curBitrate);
+                }
 
                 var encoded = _pcCodec.Encode(chunk.Interleaved, chunk.SampleCountPerChannel);
+                var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                 await FrameIO.WriteFrameAsync(_stream, FrameType.AudioPc, encoded, _writeLock, _cts.Token).ConfigureAwait(false);
+                var writeMs = System.Diagnostics.Stopwatch.GetElapsedTime(t0).TotalMilliseconds;
                 Interlocked.Exchange(ref _lastSentTicks, Environment.TickCount64);
+
+                if (!adaptive)
+                {
+                    // Lossless auto mode: a queue that stays deep (or writes that block) means the link cannot
+                    // carry the raw stream — don't wait for the queue to overflow, switch to Opus.
+                    if (_compressPref == 0 && _useNativeFormat)
+                    {
+                        var nowMs = Environment.TickCount64;
+                        if (_queue.Reader.Count >= 10 || writeMs > 400)
+                        {
+                            if (deepSinceMs == 0) deepSinceMs = nowMs;
+                            else if (nowMs - deepSinceMs > 2500) Interlocked.Exchange(ref _switchRequested, 1);
+                        }
+                        else
+                        {
+                            deepSinceMs = 0;
+                        }
+                    }
+                    continue;
+                }
+
+                statBytes += encoded.Length + 5;
+                if (writeMs > statMaxWriteMs) statMaxWriteMs = writeMs;
+                var now = Environment.TickCount64;
+                var backlog = _queue.Reader.Count;
+                // A burst after a radio stall is normal (up to ~15 chunks); only a backlog that stays deep
+                // means the link cannot carry this bitrate.
+                var congested = backlog >= 25 || writeMs > 700;
+                if (congested) lastCongestedMs = now;
+                if (congested && now - lastChangeMs > 700 && curBitrate > MinOpusBitrate)
+                {
+                    curBitrate = Math.Max(MinOpusBitrate, curBitrate * 3 / 4);
+                    _pcCodec.SetBitrate(curBitrate);
+                    lastChangeMs = now;
+                    statMinBitrate = Math.Min(statMinBitrate, curBitrate);
+                }
+                else if (now - lastCongestedMs > 8000 && now - lastChangeMs > 8000 && curBitrate < maxBitrate)
+                {
+                    curBitrate = Math.Min(maxBitrate, curBitrate + 16_000);
+                    _pcCodec.SetBitrate(curBitrate);
+                    lastChangeMs = now;
+                }
+
+                if (now - statsAtMs >= 5000)
+                {
+                    Log?.Invoke($"{Label}: Opus {curBitrate / 1000} кбит/с (минимум за период {statMinBitrate / 1000}), " +
+                                $"отправлено {statBytes * 8 / (now - statsAtMs)} кбит/с, макс. запись {statMaxWriteMs:F0} мс, очередь {backlog}");
+                    statsAtMs = now;
+                    statBytes = 0;
+                    statMaxWriteMs = 0;
+                    statMinBitrate = curBitrate;
+                }
             }
         }
         catch (OperationCanceledException)
@@ -187,6 +317,20 @@ public sealed class ClientSession : IDisposable
         {
             Log?.Invoke($"{Label}: сеть не успевает — пропущено {dropped - _droppedReported} чанков по 20 мс");
             _droppedReported = dropped;
+        }
+
+        // Auto mode: a lossless stream that keeps overflowing the queue (>= 20 dropped chunks in the
+        // last 12 s, i.e. 0.4 s of audio lost) is switched to Opus — see SwitchToOpusAsync.
+        if (_useNativeFormat && _subscribed && _compressPref == 0 && _pcCodec.Kind == PcAudioCodecKind.PcmFloat32)
+        {
+            var nowTicks = Environment.TickCount64;
+            lock (_dropWindow)
+            {
+                _dropWindow.Enqueue((nowTicks, dropped));
+                while (_dropWindow.Count > 0 && nowTicks - _dropWindow.Peek().Ticks > 12_000) _dropWindow.Dequeue();
+                if (_dropWindow.Count > 1 && dropped - _dropWindow.Peek().Dropped >= 20)
+                    Interlocked.Exchange(ref _switchRequested, 1);
+            }
         }
 
         if (Environment.TickCount64 - Interlocked.Read(ref _lastSentTicks) < 3000) return;
@@ -238,7 +382,11 @@ public sealed class ClientSession : IDisposable
     private void ApplyConfig(byte[] p)
     {
         var bitrate = BitConverter.ToInt32(p, 0);
-        if (bitrate > 0) Interlocked.Exchange(ref _pendingBitrate, bitrate);
+        if (bitrate > 0)
+        {
+            Interlocked.Exchange(ref _pendingBitrate, bitrate);
+            _configBitrate = bitrate;
+        }
 
         if (p.Length >= 8) _maxRawRate = Math.Max(0, BitConverter.ToInt32(p, 4));
 
@@ -246,6 +394,8 @@ public sealed class ClientSession : IDisposable
         {
             var len = p[8];
             if (len > 0 && p.Length >= 9 + len) PhoneName = Encoding.UTF8.GetString(p, 9, len);
+            // v3: a flags byte after the name — bits 0-1 = Wi-Fi quality (0 auto, 1 lossless, 2 compressed).
+            if (p.Length >= 10 + len) _compressPref = p[9 + len] & 3;
         }
 
         _configReceived.TrySetResult();

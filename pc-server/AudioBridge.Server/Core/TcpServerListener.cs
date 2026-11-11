@@ -41,6 +41,9 @@ public sealed class TcpServerListener : IDisposable
             {
                 var client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 client.NoDelay = true;
+                // A bounded send buffer (~170 ms of raw audio) lets a slow link push back on the writer and the
+                // queue right away; Windows otherwise hides seconds of audio in its auto-tuned socket buffer.
+                client.SendBufferSize = 64 * 1024;
                 var remote = client.Client.RemoteEndPoint as IPEndPoint;
                 var label = LinkClassifier.Describe(remote, client.Client.LocalEndPoint as IPEndPoint);
                 Log?.Invoke($"Client connected: {label}");

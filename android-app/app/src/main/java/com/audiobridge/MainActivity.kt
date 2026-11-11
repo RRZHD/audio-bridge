@@ -55,7 +55,10 @@ class MainActivity : ComponentActivity() {
     private val requiredPermissions: Array<String>
         get() {
             val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+                perms.add(Manifest.permission.BLUETOOTH_ADVERTISE) // Bluetooth LE mode
+            }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) perms.add(Manifest.permission.POST_NOTIFICATIONS)
             return perms.toTypedArray()
         }
@@ -97,7 +100,7 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private enum class Mode { WIFI, USB, BLUETOOTH }
+private enum class Mode { WIFI, USB, BLUETOOTH, BLE }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -113,11 +116,15 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
     var micBitrate by remember { mutableFloatStateOf(settings.micBitrateBps / 1000f) }
     var bufferMs by remember { mutableFloatStateOf(settings.bufferMs.toFloat()) }
     var maxRate by remember { mutableIntStateOf(settings.maxRawSampleRate) }
+    var wifiQuality by remember { mutableIntStateOf(settings.wifiQuality) }
     var micEnabled by remember { mutableStateOf(settings.micEnabled) }
 
     var status by remember { mutableStateOf("Отключено") }
     var logLines by remember { mutableStateOf(listOf<String>()) }
     val connected = status.startsWith("Подключено")
+    // Connecting or reconnecting counts as "running": the button must offer to stop it (a link that
+    // never comes up would otherwise leave no way out but killing the app).
+    val active = status.startsWith("Подключ") || status.startsWith("Переподключ")
 
     var discovered by remember { mutableStateOf(listOf<DiscoveredServer>()) }
     var discovering by remember { mutableStateOf(false) }
@@ -151,7 +158,7 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
             // throws SecurityException even though the permission was just granted. A beat on
             // the main looper gives it time to settle. See AudioService crash investigation.
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
+                startBridge(context, mode, host, port.toIntOrNull() ?: 45121, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
             }, 300)
         } else {
             status = "Нет разрешений (микрофон/Bluetooth/уведомления)"
@@ -161,13 +168,13 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
     fun connect() {
         settings.mode = mode.name
         settings.host = host
-        settings.port = port.toIntOrNull() ?: 57120
+        settings.port = port.toIntOrNull() ?: 45121
         settings.btAddress = btAddress
         val missing = requiredPermissions.filter {
             ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isEmpty()) {
-            startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
+            startBridge(context, mode, host, port.toIntOrNull() ?: 45121, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
@@ -250,7 +257,7 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
 
             StatusCard(status = status, connected = connected)
 
-            ModeSelector(mode = mode, enabled = !connected, onSelect = { mode = it })
+            ModeSelector(mode = mode, enabled = !active, onSelect = { mode = it })
 
             AnimatedContent(targetState = mode, label = "mode-fields") { m ->
                 when (m) {
@@ -258,17 +265,18 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
                         host = host, onHostChange = { host = it },
                         port = port, onPortChange = { port = it },
                         discovered = discovered, discovering = discovering,
-                        enabled = !connected,
+                        enabled = !active,
                         onRefresh = ::runDiscovery,
                         onPick = { host = it.host; port = it.port.toString() },
                     )
                     Mode.USB -> UsbSection()
+                    Mode.BLE -> BleSection()
                     Mode.BLUETOOTH -> BluetoothSection(
                         devices = pairedDevices,
                         selectedAddress = btAddress,
                         onSelect = { btAddress = it },
                         onRefresh = ::refreshPairedDevices,
-                        enabled = !connected,
+                        enabled = !active,
                     )
                 }
             }
@@ -289,21 +297,21 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
                     }
                     Switch(
                         checked = micEnabled,
-                        enabled = !connected,
+                        enabled = !active,
                         onCheckedChange = { micEnabled = it; settings.micEnabled = it },
                     )
                 }
             }
 
             Button(
-                onClick = { if (connected) disconnect() else connect() },
+                onClick = { if (active) disconnect() else connect() },
                 modifier = Modifier.fillMaxWidth().height(52.dp),
                 shape = RoundedCornerShape(14.dp),
-                colors = if (connected) ButtonDefaults.buttonColors(containerColor = StatusRed) else ButtonDefaults.buttonColors(),
+                colors = if (active) ButtonDefaults.buttonColors(containerColor = StatusRed) else ButtonDefaults.buttonColors(),
             ) {
                 Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
                 Spacer(Modifier.width(8.dp))
-                Text(if (connected) "Отключиться" else "Подключиться", style = MaterialTheme.typography.titleMedium)
+                Text(if (active) "Отключиться" else "Подключиться", style = MaterialTheme.typography.titleMedium)
             }
 
             LogCard(logLines)
@@ -321,6 +329,8 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbA
             onBufferMsChange = { bufferMs = it; settings.bufferMs = it.toInt() },
             maxRate = maxRate,
             onMaxRateChange = { maxRate = it; settings.maxRawSampleRate = it },
+            wifiQuality = wifiQuality,
+            onWifiQualityChange = { wifiQuality = it; settings.wifiQuality = it },
             onDismiss = { showSettingsSheet = false },
         )
     }
@@ -414,7 +424,8 @@ private fun ModeSelector(mode: Mode, enabled: Boolean, onSelect: (Mode) -> Unit)
     val options = listOf(
         Triple(Mode.WIFI, "Wi-Fi", Icons.Filled.Wifi),
         Triple(Mode.USB, "USB", Icons.Filled.Cable),
-        Triple(Mode.BLUETOOTH, "Bluetooth", Icons.Filled.Bluetooth),
+        Triple(Mode.BLE, "BT LE", Icons.Filled.Bluetooth),
+        Triple(Mode.BLUETOOTH, "BT", Icons.Filled.Bluetooth),
     )
     SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
         options.forEachIndexed { index, (value, label, icon) ->
@@ -616,6 +627,7 @@ private fun BitrateSettingsSheet(
     micBitrate: Float, onMicBitrateChange: (Float) -> Unit,
     bufferMs: Float, onBufferMsChange: (Float) -> Unit,
     maxRate: Int, onMaxRateChange: (Int) -> Unit,
+    wifiQuality: Int, onWifiQualityChange: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
@@ -653,9 +665,25 @@ private fun BitrateSettingsSheet(
 
             Spacer(Modifier.height(20.dp))
 
+            Text("Качество по Wi-Fi", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Авто: звук идёт без сжатия, а если Wi-Fi не успевает (рвётся, особенно на 2,4 ГГц или через роутер), " +
+                    "сервер сам переключается на сжатие Opus — нагрузка на сеть в ~15 раз меньше. " +
+                    "«Без сжатия» никогда не сжимает, «Сжатый» сжимает сразу. Применяется при следующем подключении.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                listOf(0 to "Авто", 1 to "Без сжатия", 2 to "Сжатый").forEach { (value, label) ->
+                    FilterChip(selected = wifiQuality == value, onClick = { onWifiQualityChange(value) }, label = { Text(label) })
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
             Text("Качество звука (Bluetooth)", style = MaterialTheme.typography.titleLarge)
             Text(
-                "Действует только для режима Bluetooth — Wi-Fi и USB всегда идут без сжатия.",
+                "Действует для Bluetooth и сжатого Wi-Fi; USB всегда идёт без сжатия.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -669,5 +697,18 @@ private fun BitrateSettingsSheet(
             Text("Микрофон → ПК: ${micBitrate.toInt()} kbps", style = MaterialTheme.typography.titleMedium)
             Slider(value = micBitrate, onValueChange = onMicBitrateChange, valueRange = 12f..64f, steps = 12)
         }
+    }
+}
+
+@Composable
+private fun BleSection() {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Text(
+            "Рекомендуемый Bluetooth-режим: стабильнее классического и с малой задержкой. Сопряжение не нужно — " +
+                "нажми «Подключиться», телефон начнёт ждать ПК, а запущенный на ПК сервер подключится к нему сам " +
+                "(на ПК должен быть включён Bluetooth, в сервере нажат «Старт»).",
+            style = MaterialTheme.typography.bodyMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }

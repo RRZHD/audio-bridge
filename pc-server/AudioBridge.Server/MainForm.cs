@@ -11,11 +11,12 @@ namespace AudioBridge.Server;
 
 public sealed class MainForm : Form
 {
-    private const int DefaultPort = 57120;
+    private const int DefaultPort = 45121;
 
     private readonly AudioEngine _engine = new();
     private readonly TcpServerListener _tcp = new();
     private readonly BluetoothServerListener _bt = new();
+    private readonly BleServerListener _ble = new();
     private readonly DiscoveryResponder _discovery = new();
     private readonly AoaHost _aoa = new();
     private readonly VolumeSync _volume = new();
@@ -71,6 +72,7 @@ public sealed class MainForm : Form
         _engine.Log += AppendLog;
         _tcp.Log += AppendLog;
         _bt.Log += AppendLog;
+        _ble.Log += AppendLog;
         _discovery.Log += AppendLog;
         _tcp.ClientAccepted += OnClientAccepted;
         _aoa.Log += AppendLog;
@@ -81,6 +83,7 @@ public sealed class MainForm : Form
             lock (_sessionsLock) { foreach (var s in _sessions) s.SendVolume(level, muted); }
         };
         _bt.ClientAccepted += OnBluetoothClientAccepted;
+        _ble.ClientAccepted += OnBluetoothClientAccepted; // LE rides the same Opus path as classic Bluetooth
 
         FormClosing += (_, _) => StopAll();
         Shown += (_, _) => UpdateFirewallWarning();
@@ -212,7 +215,8 @@ public sealed class MainForm : Form
             _settings.MicOutputDeviceId == MicOutputDefault ? _micOutputDeviceCombo.Items[1]
             : _renderDevices.FirstOrDefault(d => d.ID == _settings.MicOutputDeviceId) is { } mic ? mic
             : _micOutputDeviceCombo.Items[0];
-        if (_settings.Port is >= 1024 and <= 65535) _portInput.Value = _settings.Port.Value;
+        // 57120 was the old default; some reboots put it inside a range Windows reserves, so it is retired.
+        if (_settings.Port is >= 1024 and <= 65535 and not 57120) _portInput.Value = _settings.Port.Value;
 
         // Virtual outputs get a star so they stand out in the list.
         void FormatDevice(object? _, ListControlConvertEventArgs e)
@@ -347,13 +351,18 @@ public sealed class MainForm : Form
             _engine.StartCapture(captureDevice);
             _volume.Attach(captureDevice ?? new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console));
             if (playMic) _engine.StartMicPlayback(micOutDevice);
-            _tcp.Start(port);
+            port = StartTcpWithFallback(port);
+            _portInput.Value = port;
+            _settings.Port = port;
+            _settings.Save();
 
             // Bluetooth and discovery are optional extras — Wi-Fi/USB still work without them, so
             // don't let either one's failure (no Bluetooth radio, a reserved discovery port, etc.)
             // take down a server that's otherwise fine.
             try { _bt.Start(); }
             catch (Exception ex) { AppendLog($"Bluetooth недоступен: {ex.Message}"); }
+            try { _ble.Start(); }
+            catch (Exception ex) { AppendLog($"Bluetooth LE недоступен: {ex.Message}"); }
             _discovery.Start(port); // never throws — see DiscoveryResponder.Start
             if (_usbCheck.Checked) _aoa.Start();
 
@@ -371,10 +380,36 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>
+    /// Starts the TCP listener; if the chosen port is reserved by Windows (Hyper-V/WSL exclusion
+    /// ranges give "access to a socket was denied") or taken, falls through 45121–45140. The port in
+    /// use is announced by the UDP discovery, so phones find it either way.
+    /// </summary>
+    private int StartTcpWithFallback(int port)
+    {
+        System.Net.Sockets.SocketException? last = null;
+        foreach (var candidate in new[] { port }.Concat(Enumerable.Range(DefaultPort, 20)).Distinct())
+        {
+            try
+            {
+                _tcp.Start(candidate);
+                if (candidate != port) AppendLog($"Порт {port} недоступен ({last?.Message}) — использую {candidate}. Телефон найдёт его через автопоиск.");
+                return candidate;
+            }
+            catch (System.Net.Sockets.SocketException ex) when (ex.SocketErrorCode is System.Net.Sockets.SocketError.AccessDenied or System.Net.Sockets.SocketError.AddressAlreadyInUse)
+            {
+                last = ex;
+            }
+        }
+        if (last != null) throw last;
+        throw new InvalidOperationException("нет свободного порта");
+    }
+
     private void StopAll()
     {
         _tcp.Stop();
         _bt.Stop();
+        _ble.Stop();
         _discovery.Stop();
         _aoa.Stop();
         lock (_sessionsLock)

@@ -126,6 +126,26 @@ class PlayoutBufferTest {
     }
 
     @Test
+    fun targetEasesBackAfterTheLinkRecovers() {
+        // A Bluetooth hiccup grows the target; once the link has been quiet for a while the target
+        // must come back to the configured value instead of keeping the latency forever.
+        var now = 0L
+        val sink = FakeSink(rate, channels)
+        val buffer = PlayoutBuffer(sink, rate, channels, 100, clock = { now })
+        fun feed(t: Double) {
+            now = t.toLong()
+            sink.advanceTo(t)
+            assertTrue(buffer.write(chunk, chunkSamples))
+        }
+        steady(5).forEach(::feed)
+        // 1.2 s with nothing arriving, then the stream resumes.
+        val resume = 5_000.0 + 1_200.0
+        (0 until 50 * 90).forEach { feed(resume + it * 20.0) }
+        assertTrue("the stall must have caused an underrun", buffer.underruns > 0)
+        assertEquals("target should have decayed to the configured value", 100, buffer.targetMs)
+    }
+
+    @Test
     fun stallCausesOneGapThenRecovers() {
         val before = steady(5)
         // 400 ms stall; the backlog (20 chunks) then arrives at once, after which delivery is steady.
