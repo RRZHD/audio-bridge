@@ -4,16 +4,18 @@ import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
+import android.content.Context
 import android.content.Intent
-import android.media.AudioAttributes
 import android.media.AudioFormat
-import android.media.AudioManager
 import android.media.AudioRecord
-import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.content.pm.ServiceInfo
+import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
+import android.os.Process
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
 import com.audiobridge.transport.BluetoothTransport
@@ -22,8 +24,10 @@ import com.audiobridge.transport.Transport
 import com.audiobridge.transport.TransportKind
 import com.audiobridge.transport.UsbTransport
 import com.audiobridge.transport.WifiTransport
+import java.io.BufferedInputStream
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.concurrent.thread
 
 class AudioService : Service() {
@@ -37,10 +41,14 @@ class AudioService : Service() {
         const val EXTRA_BT_ADDRESS = "bt_address"
         const val EXTRA_PC_BITRATE = "pc_bitrate"
         const val EXTRA_MIC_BITRATE = "mic_bitrate"
+        const val EXTRA_BUFFER_MS = "buffer_ms"
 
         const val DEFAULT_PC_BITRATE = 320_000
         const val DEFAULT_MIC_BITRATE = 32_000
+        const val DEFAULT_BUFFER_MS = PlayoutBuffer.DEFAULT_TARGET_MS
 
+        private const val TAG = "AudioBridge"
+        private const val STATS_INTERVAL_MS = 10_000L
         private const val CHANNEL_ID = "audio_bridge_channel"
         private const val NOTIFICATION_ID = 1
 
@@ -69,6 +77,7 @@ class AudioService : Service() {
         val btAddress = intent.getStringExtra(EXTRA_BT_ADDRESS) ?: ""
         val pcBitrate = intent.getIntExtra(EXTRA_PC_BITRATE, DEFAULT_PC_BITRATE)
         val micBitrate = intent.getIntExtra(EXTRA_MIC_BITRATE, DEFAULT_MIC_BITRATE)
+        val bufferMs = intent.getIntExtra(EXTRA_BUFFER_MS, DEFAULT_BUFFER_MS)
 
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification("Подключение..."),
@@ -79,13 +88,13 @@ class AudioService : Service() {
 
         val transport: Transport = when (mode) {
             "WIFI" -> WifiTransport(host, port)
-            "USB" -> UsbTransport(port)
+            "USB" -> UsbTransport(applicationContext)
             "BLUETOOTH" -> BluetoothTransport(btAddress)
             else -> return START_NOT_STICKY
         }
 
         running.set(true)
-        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate) }
+        workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate, bufferMs) }
         return START_STICKY
     }
 
@@ -100,19 +109,26 @@ class AudioService : Service() {
     override fun onDestroy() {
         running.set(false)
         workerThread?.interrupt()
+        releaseLocks()
         super.onDestroy()
     }
 
-    private fun runLoop(transport: Transport, pcBitrate: Int, micBitrate: Int) {
+    private fun runLoop(transport: Transport, pcBitrate: Int, micBitrate: Int, bufferMs: Int) {
         while (running.get()) {
             try {
                 StatusBus.postStatus("Подключение (${transport.kind})...")
                 val conn = transport.connect()
                 StatusBus.postStatus("Подключено (${transport.kind})")
                 updateNotification("Подключено (${transport.kind})")
-                runSession(transport.kind, conn, pcBitrate, micBitrate)
+                acquireLocks(transport.kind)
+                try {
+                    runSession(transport.kind, conn, pcBitrate, micBitrate, bufferMs, Settings(applicationContext).maxRawSampleRate)
+                } finally {
+                    releaseLocks()
+                }
             } catch (e: Exception) {
-                StatusBus.postLog("Ошибка соединения: ${e.message}")
+                Log.e(TAG, "session error", e)
+                StatusBus.postLog("Ошибка соединения: $e")
             }
             if (!running.get()) break
             StatusBus.postStatus("Переподключение...")
@@ -125,7 +141,49 @@ class AudioService : Service() {
         }
     }
 
-    private fun runSession(kind: TransportKind, conn: OpenConnection, pcBitrate: Int, micBitrate: Int) {
+    /** Name shown on the PC next to this connection (the phone's user-visible device name). */
+    private fun deviceName(): String =
+        try {
+            android.provider.Settings.Global.getString(contentResolver, android.provider.Settings.Global.DEVICE_NAME)
+        } catch (_: Exception) {
+            null
+        }?.takeIf { it.isNotBlank() } ?: Build.MODEL
+
+    private var wakeLock: PowerManager.WakeLock? = null
+    private var wifiLock: WifiManager.WifiLock? = null
+
+    // Without these Android is free to doze the CPU and put the Wi-Fi radio into power-save while
+    // the screen is off — which shows up as bursts of latency and dropouts mid-stream.
+    private fun acquireLocks(kind: TransportKind) {
+        try {
+            val pm = getSystemService(PowerManager::class.java)
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "AudioBridge:session").apply {
+                setReferenceCounted(false)
+                acquire()
+            }
+            if (kind == TransportKind.WIFI) {
+                val wm = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+                @Suppress("DEPRECATION")
+                val mode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q)
+                    WifiManager.WIFI_MODE_FULL_LOW_LATENCY else WifiManager.WIFI_MODE_FULL_HIGH_PERF
+                wifiLock = wm.createWifiLock(mode, "AudioBridge:wifi").apply {
+                    setReferenceCounted(false)
+                    acquire()
+                }
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Could not acquire wake/wifi lock: ${e.message}")
+        }
+    }
+
+    private fun releaseLocks() {
+        try { wifiLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+        try { wakeLock?.takeIf { it.isHeld }?.release() } catch (_: Exception) {}
+        wifiLock = null
+        wakeLock = null
+    }
+
+    private fun runSession(kind: TransportKind, conn: OpenConnection, pcBitrate: Int, micBitrate: Int, bufferMs: Int, maxRawRate: Int) {
         val writeLock = Any()
         val sessionAlive = AtomicBoolean(true)
         val lastRecvAt = java.util.concurrent.atomic.AtomicLong(System.currentTimeMillis())
@@ -137,15 +195,15 @@ class AudioService : Service() {
         // ends up on the Opus/Bluetooth path — ignored by the raw Wi-Fi/USB path). See PROTOCOL.md.
         try {
             synchronized(writeLock) {
-                FrameIO.writeFrame(conn.output, FrameType.CONFIG, FrameIO.buildConfigPayload(pcBitrate))
+                FrameIO.writeFrame(conn.output, FrameType.CONFIG, FrameIO.buildConfigPayload(pcBitrate, maxRawRate, deviceName()))
             }
         } catch (e: Exception) {
             StatusBus.postLog("Не удалось отправить CONFIG: ${e.message}")
         }
 
         var pcCodec: PcAudioCodec? = null
-        var audioTrack: AudioTrack? = null
-        var pcChannels = 0
+        val playout = AtomicReference<PlayoutBuffer?>(null)
+        var streamRate = 0
         // Sized generously per FORMAT frame below — raw Wi-Fi/USB chunks are at the PC's native
         // sample rate (uncapped, can exceed 48kHz for high-res audio setups), unlike the fixed
         // 48kHz/stereo Opus/Bluetooth path.
@@ -154,48 +212,82 @@ class AudioService : Service() {
         fun closeSession() {
             if (!sessionAlive.compareAndSet(true, false)) return
             try { conn.closeable.close() } catch (_: IOException) { /* ignore */ }
-            audioTrack?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
+            playout.getAndSet(null)?.release()
         }
 
-        // Reader thread: FORMAT + AUDIO_PC frames -> AudioTrack playback.
+        // Reader thread: FORMAT + AUDIO_PC frames -> jitter buffer -> AudioTrack.
         val readerThread = thread(name = "AudioBridge-reader") {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
+            // Frames are 5-byte header + payload: read through a buffer, not one tiny syscall each.
+            val input = BufferedInputStream(conn.input, 64 * 1024)
+            var lastStatsAt = System.currentTimeMillis()
             try {
                 while (sessionAlive.get()) {
-                    val frame = FrameIO.readFrame(conn.input)
+                    val frame = FrameIO.readFrame(input)
                     lastRecvAt.set(System.currentTimeMillis())
                     when (frame.type) {
                         FrameType.FORMAT -> {
                             val fmt = FrameIO.parseFormat(frame.payload)
-                            pcChannels = fmt.channels
                             pcCodec = if (fmt.codec == PcAudioCodecKind.OPUS)
                                 OpusPcCodec(fmt.sampleRate, fmt.channels, 320_000)
                             else RawFloat32PcCodec()
-                            // 2x the 20ms chunk size as jitter headroom.
+                            // 2x the 20ms chunk size as headroom.
                             val neededSamples = (fmt.sampleRate * CHUNK_MILLIS / 1000) * fmt.channels * 2
                             if (pcInterleavedScratch.size < neededSamples) {
                                 pcInterleavedScratch = FloatArray(neededSamples)
                             }
-                            audioTrack?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
-                            audioTrack = createPlaybackTrack(fmt.sampleRate, fmt.channels).also { it.play() }
-                            StatusBus.postLog("Формат ПК: ${fmt.sampleRate}Hz, ${fmt.channels}ch, codec=${fmt.codec}")
+                            streamRate = fmt.sampleRate
+                            playout.getAndSet(
+                                PlayoutBuffer(
+                                    AudioTrackSink(createPlaybackTrack(fmt.sampleRate, fmt.channels)),
+                                    fmt.sampleRate, fmt.channels, bufferMs,
+                                    onEvent = { StatusBus.postLog(it) },
+                                )
+                            )?.release()
+                            StatusBus.postLog("Формат ПК: ${fmt.sampleRate}Hz, ${fmt.channels}ch, codec=${fmt.codec}, буфер $bufferMs мс")
                         }
                         FrameType.AUDIO_PC -> {
                             val codec = pcCodec ?: continue
-                            val track = audioTrack ?: continue
-                            val decoded = codec.decode(frame.payload, pcInterleavedScratch)
-                            track.write(pcInterleavedScratch, 0, decoded * pcChannels, AudioTrack.WRITE_BLOCKING)
+                            val buffer = playout.get() ?: continue
+                            // decode() returns INTERLEAVED samples — write exactly that many.
+                            val samples = codec.decode(frame.payload, pcInterleavedScratch)
+                            if (!buffer.write(pcInterleavedScratch, samples)) {
+                                throw IOException("AudioTrack write failed")
+                            }
+                            if (buffer.isStalled()) {
+                                // The output accepted the track but isn't consuming it. If we were
+                                // asked for a high rate, drop to 48 kHz for next time and reconnect.
+                                if (streamRate > DEFAULT_MAX_RAW_RATE) {
+                                    Settings(applicationContext).maxRawSampleRate = DEFAULT_MAX_RAW_RATE
+                                    throw IOException("Устройство не воспроизводит $streamRate Гц — снижаю до 48 кГц и переподключаюсь")
+                                }
+                                throw IOException("Устройство вывода не воспроизводит звук (позиция воспроизведения не меняется)")
+                            }
+                            val now = System.currentTimeMillis()
+                            if (now - lastStatsAt >= STATS_INTERVAL_MS) {
+                                lastStatsAt = now
+                                val line = buffer.statsLine()
+                                Log.i(TAG, line)
+                                StatusBus.postLog(line)
+                            }
                         }
                         else -> { /* PING / unknown: no-op, already refreshed lastRecvAt above */ }
                     }
                 }
             } catch (e: Exception) {
-                StatusBus.postLog("Reader stopped: ${e.message}")
+                Log.e(TAG, "reader stopped", e)
+                StatusBus.postLog("Reader stopped: $e")
             }
             closeSession()
         }
 
-        // Mic thread: AudioRecord -> AUDIO_MIC frames.
-        val micThread = thread(name = "AudioBridge-mic") {
+        // Mic thread: AudioRecord -> AUDIO_MIC frames. Off unless the user switched it on — a phone
+        // microphone that is silently live (and, on the PC, played in the user's headphones) is a
+        // nasty default.
+        val micEnabled = Settings(applicationContext).micEnabled
+        if (!micEnabled) StatusBus.postLog("Микрофон не передаётся (включается переключателем в приложении)")
+        val micThread = if (!micEnabled) null else thread(name = "AudioBridge-mic") {
+            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var record: AudioRecord? = null
             try {
                 val minBuf = AudioRecord.getMinBufferSize(
@@ -217,7 +309,8 @@ class AudioService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                StatusBus.postLog("Mic capture stopped: ${e.message}")
+                Log.e(TAG, "mic stopped", e)
+                StatusBus.postLog("Mic capture stopped: $e")
             } finally {
                 record?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
             }
@@ -247,29 +340,7 @@ class AudioService : Service() {
 
         closeSession()
         readerThread.join(2000)
-        micThread.join(2000)
-    }
-
-    private fun createPlaybackTrack(sampleRate: Int, channels: Int): AudioTrack {
-        val channelMask = if (channels >= 2) AudioFormat.CHANNEL_OUT_STEREO else AudioFormat.CHANNEL_OUT_MONO
-        val format = AudioFormat.Builder()
-            .setEncoding(AudioFormat.ENCODING_PCM_FLOAT)
-            .setSampleRate(sampleRate)
-            .setChannelMask(channelMask)
-            .build()
-        val attrs = AudioAttributes.Builder()
-            .setUsage(AudioAttributes.USAGE_MEDIA)
-            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
-            .build()
-        val minBuf = AudioTrack.getMinBufferSize(sampleRate, channelMask, AudioFormat.ENCODING_PCM_FLOAT)
-        val bufSize = maxOf(minBuf, sampleRate * channels * 4 / 5) // ~200ms headroom against jitter
-        return AudioTrack.Builder()
-            .setAudioAttributes(attrs)
-            .setAudioFormat(format)
-            .setBufferSizeInBytes(bufSize)
-            .setTransferMode(AudioTrack.MODE_STREAM)
-            .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-            .build()
+        micThread?.join(2000)
     }
 
     private fun buildNotification(text: String): android.app.Notification {

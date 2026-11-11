@@ -29,7 +29,7 @@ public sealed class TcpServerListener : IDisposable
         _cts = new CancellationTokenSource();
         _listener = new TcpListener(IPAddress.Any, port);
         _listener.Start();
-        Log?.Invoke($"TCP listening on 0.0.0.0:{port} (Wi-Fi + USB/adb reverse)");
+        Log?.Invoke($"TCP listening on 0.0.0.0:{port} (Wi-Fi, LAN)");
         _ = AcceptLoopAsync(_listener, _cts.Token);
     }
 
@@ -42,8 +42,7 @@ public sealed class TcpServerListener : IDisposable
                 var client = await listener.AcceptTcpClientAsync(ct).ConfigureAwait(false);
                 client.NoDelay = true;
                 var remote = client.Client.RemoteEndPoint as IPEndPoint;
-                var isLoopback = remote != null && IPAddress.IsLoopback(remote.Address);
-                var label = isLoopback ? $"USB (adb reverse, {remote})" : $"Wi-Fi ({remote})";
+                var label = LinkClassifier.Describe(remote, client.Client.LocalEndPoint as IPEndPoint);
                 Log?.Invoke($"Client connected: {label}");
                 ClientAccepted?.Invoke(client.GetStream(), label);
             }

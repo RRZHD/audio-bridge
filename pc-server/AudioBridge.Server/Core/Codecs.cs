@@ -18,7 +18,13 @@ public interface IPcAudioCodec
     /// <summary>Encode one chunk of interleaved float PCM (range -1..1) into wire bytes.</summary>
     byte[] Encode(float[] interleaved, int sampleCountPerChannel);
 
-    /// <summary>Decode wire bytes back into interleaved float PCM. Returns sample count per channel.</summary>
+    /// <summary>
+    /// Decode wire bytes back into interleaved float PCM. Returns the number of <b>interleaved</b>
+    /// samples written (frames × channels) — the same convention for every codec. (The raw codec
+    /// used to return the interleaved count while Opus returned frames, and the caller multiplied by
+    /// channels: raw audio was then played with a block of zeros after every chunk — the cause of the
+    /// "slow and choppy" Wi-Fi/USB playback.)
+    /// </summary>
     int Decode(byte[] payload, float[] outInterleaved);
 
     /// <summary>Applied live, without recreating the encoder. No-op for codecs that don't have a
@@ -111,7 +117,7 @@ public sealed class OpusPcCodec : IPcAudioCodec
         {
             outInterleaved[i] = _pcmScratch[i] / (float)short.MaxValue;
         }
-        return decoded;
+        return total;
     }
 }
 

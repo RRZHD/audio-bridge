@@ -8,7 +8,7 @@
 ; Output: installer\output\AudioBridgeServer-Setup.exe
 
 #define MyAppName "Audio Bridge Server"
-#define MyAppVersion "1.0.0"
+#define MyAppVersion "1.2.0"
 #define MyAppPublisher "RRZHD"
 #define MyAppURL "https://github.com/RRZHD/audio-bridge"
 #define MyAppExeName "AudioBridgeServer.exe"
@@ -42,9 +42,13 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 Name: "autostart"; Description: "Запускать при входе в Windows"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+Name: "usbdk"; Description: "Установить драйвер UsbDk (нужен для подключения телефона по USB-кабелю; запросит права администратора, после установки нужна перезагрузка Windows)"; GroupDescription: "USB"; Check: UsbDkMissing
 
 [Files]
 Source: "{#PublishDir}\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; UsbDk (Apache-2.0, signed by Red Hat): the one-time USB driver for the phone-over-cable mode.
+Source: "third-party\UsbDk_1.0.22_x64.msi"; DestDir: "{app}"; Flags: ignoreversion
+Source: "third-party\UsbDk-LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -52,4 +56,17 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: autostart
 
 [Run]
+Filename: "msiexec.exe"; Parameters: "/i ""{app}\UsbDk_1.0.22_x64.msi"" /passive /norestart"; Flags: shellexec waituntilterminated; Verb: "runas"; Tasks: usbdk
+; Hide rules: keep UsbDk from power-cycling the phone's accessory device (which would drop accessory mode).
+Filename: "{commonpf64}\UsbDk Runtime Library\UsbDkController.exe"; Parameters: "-P 0 18D1 2D00 -1 -1 1"; Flags: shellexec waituntilterminated runhidden; Verb: "runas"; Tasks: usbdk
+Filename: "{commonpf64}\UsbDk Runtime Library\UsbDkController.exe"; Parameters: "-P 0 18D1 2D01 -1 -1 1"; Flags: shellexec waituntilterminated runhidden; Verb: "runas"; Tasks: usbdk
+Filename: "{commonpf64}\UsbDk Runtime Library\UsbDkController.exe"; Parameters: "-P 0 18D1 2D04 -1 -1 1"; Flags: shellexec waituntilterminated runhidden; Verb: "runas"; Tasks: usbdk
+Filename: "{commonpf64}\UsbDk Runtime Library\UsbDkController.exe"; Parameters: "-P 0 18D1 2D05 -1 -1 1"; Flags: shellexec waituntilterminated runhidden; Verb: "runas"; Tasks: usbdk
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
+
+[Code]
+// UsbDk's service entry exists once its MSI has been installed.
+function UsbDkMissing: Boolean;
+begin
+  Result := not RegKeyExists(HKLM, 'SYSTEM\CurrentControlSet\Services\UsbDk');
+end;

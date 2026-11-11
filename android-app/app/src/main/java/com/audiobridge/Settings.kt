@@ -32,4 +32,26 @@ class Settings(context: Context) {
     var micBitrateBps: Int
         get() = prefs.getInt("mic_bitrate", AudioService.DEFAULT_MIC_BITRATE)
         set(value) = prefs.edit().putInt("mic_bitrate", value).apply()
+
+    /**
+     * Highest sample rate the PC may send on the lossless Wi-Fi/USB path. Default 48 kHz: the
+     * Xperia 1 IV's audio stack accepted a 192 kHz float track but never played a single frame of
+     * it, and Android mixes to the output's native rate (48 kHz) anyway. Lowered automatically if
+     * a higher rate is chosen and the device turns out not to play it.
+     */
+    var maxRawSampleRate: Int
+        get() = prefs.getInt("max_raw_rate", DEFAULT_MAX_RAW_RATE)
+        set(value) = prefs.edit().putInt("max_raw_rate", value).apply()
+
+    /** Send this phone's microphone to the PC. Off by default (privacy; also avoids surprise playback). */
+    var micEnabled: Boolean
+        get() = prefs.getBoolean("mic_enabled", false)
+        set(value) = prefs.edit().putBoolean("mic_enabled", value).apply()
+
+    /** Playback jitter buffer (ms) — the latency-vs-robustness knob for choppy links. */
+    var bufferMs: Int
+        get() = prefs.getInt("buffer_ms", AudioService.DEFAULT_BUFFER_MS)
+        set(value) = prefs.edit().putInt("buffer_ms", value).apply()
 }
+
+const val DEFAULT_MAX_RAW_RATE = 48_000

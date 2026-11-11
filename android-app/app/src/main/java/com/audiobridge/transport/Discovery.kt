@@ -4,15 +4,24 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import java.net.DatagramPacket
 import java.net.DatagramSocket
+import java.net.Inet4Address
 import java.net.InetAddress
+import java.net.InetSocketAddress
+import java.net.NetworkInterface
 import java.net.SocketTimeoutException
 
 data class DiscoveredServer(val name: String, val host: String, val port: Int)
 
+/** An IPv4 network interface the phone could reach the PC through. */
+data class NetLink(val name: String, val local: Inet4Address, val broadcast: InetAddress?)
+
 /**
- * Finds PC servers on the local network by UDP broadcast — the PC's IP differs per
- * hotspot/router setup, so the user shouldn't have to type it in. See PROTOCOL.md ("Discovery").
- * Only meaningful for Wi-Fi; USB and Bluetooth don't need an IP at all.
+ * Finds PC servers by UDP broadcast — the PC's IP differs per network (hotspot, router, USB
+ * modem), so the user shouldn't have to type it in. See PROTOCOL.md ("Discovery").
+ *
+ * The probe is sent per interface from a socket bound to that interface's own address, so it leaves
+ * through the intended link (Wi-Fi *or* the USB-modem interface) and the PC's reply — whose source
+ * address is the PC's IP on that link — is the address to connect to.
  */
 object Discovery {
     // Must match DiscoveryResponder.DiscoveryPort on the PC side.
@@ -20,46 +29,82 @@ object Discovery {
     private val REQUEST = "ABDQ".toByteArray(Charsets.US_ASCII)
     private val RESPONSE_MAGIC = "ABDR".toByteArray(Charsets.US_ASCII)
 
-    /** Blocking — call from a background thread. */
-    fun discover(context: Context, timeoutMs: Int = 2000): List<DiscoveredServer> {
-        val results = LinkedHashMap<String, DiscoveredServer>() // keyed by host, dedupe repeat replies
+    // Mobile-data / virtual interfaces that can never lead to a PC.
+    private val IGNORED_PREFIXES = listOf("lo", "rmnet", "ccmni", "dummy", "tun", "ppp", "p2p", "v4-", "clat")
 
+    /** Every up, non-loopback IPv4 interface worth probing (Wi-Fi, USB modem, Ethernet...). */
+    fun candidateLinks(): List<NetLink> {
+        val links = mutableListOf<NetLink>()
+        val interfaces = try { NetworkInterface.getNetworkInterfaces()?.toList() } catch (_: Exception) { null } ?: return links
+        for (ni in interfaces) {
+            val name = ni.name.lowercase()
+            if (!ni.isUp || ni.isLoopback || IGNORED_PREFIXES.any { name.startsWith(it) }) continue
+            for (ia in ni.interfaceAddresses) {
+                val addr = ia.address as? Inet4Address ?: continue
+                if (addr.isLinkLocalAddress) continue
+                links.add(NetLink(ni.name, addr, ia.broadcast))
+            }
+        }
+        return links
+    }
+
+    /** Wi-Fi discovery: probes all candidate interfaces at once. Blocking — call off the main thread. */
+    fun discover(context: Context, timeoutMs: Int = 2000): List<DiscoveredServer> {
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         val multicastLock = wifiManager?.createMulticastLock("audiobridge-discovery")?.apply {
             setReferenceCounted(true)
             acquire()
         }
+        try {
+            val results = LinkedHashMap<String, DiscoveredServer>() // keyed by host: dedupe repeat replies
+            val lock = Any()
+            val threads = candidateLinks().map { link ->
+                Thread {
+                    val found = probe(link, timeoutMs)
+                    synchronized(lock) { found.forEach { results[it.host] = it } }
+                }.also { it.start() }
+            }
+            threads.forEach { it.join(timeoutMs + 1500L) }
+            return synchronized(lock) { results.values.toList() }
+        } finally {
+            try { multicastLock?.release() } catch (_: Exception) {}
+        }
+    }
 
+    /** Probes a single link (e.g. the USB-modem interface). Blocking. */
+    fun probe(link: NetLink, timeoutMs: Int): List<DiscoveredServer> {
+        val results = LinkedHashMap<String, DiscoveredServer>()
         try {
             DatagramSocket(null).use { socket ->
                 socket.reuseAddress = true
                 socket.broadcast = true
-                socket.soTimeout = 300
-                socket.bind(java.net.InetSocketAddress(0))
+                socket.soTimeout = 250
+                socket.bind(InetSocketAddress(link.local, 0)) // pin the probe to this interface
 
-                for (broadcastAddress in broadcastAddresses(wifiManager)) {
-                    try {
-                        val packet = DatagramPacket(REQUEST, REQUEST.size, broadcastAddress, DISCOVERY_PORT)
-                        socket.send(packet)
-                    } catch (_: Exception) { /* try the next address */ }
-                }
-
+                val targets = listOfNotNull(link.broadcast, InetAddress.getByName("255.255.255.255"))
                 val deadline = System.currentTimeMillis() + timeoutMs
+                var nextSend = 0L
                 val buf = ByteArray(512)
                 while (System.currentTimeMillis() < deadline) {
+                    val now = System.currentTimeMillis()
+                    if (now >= nextSend) { // re-send a few times: the first packet can be lost while the link comes up
+                        for (t in targets) {
+                            try { socket.send(DatagramPacket(REQUEST, REQUEST.size, t, DISCOVERY_PORT)) } catch (_: Exception) {}
+                        }
+                        nextSend = now + 500
+                    }
                     try {
                         val packet = DatagramPacket(buf, buf.size)
                         socket.receive(packet)
                         parseResponse(packet)?.let { results[it.host] = it }
                     } catch (_: SocketTimeoutException) {
-                        // expected — just means no reply within this slice, keep polling until deadline
+                        // no reply in this slice — keep polling until the deadline
                     }
                 }
             }
-        } finally {
-            try { multicastLock?.release() } catch (_: Exception) {}
+        } catch (_: Exception) {
+            // an interface that can't be bound/used just yields nothing
         }
-
         return results.values.toList()
     }
 
@@ -79,29 +124,5 @@ object Discovery {
         val port = java.nio.ByteBuffer.wrap(data, offset, 4)
             .order(java.nio.ByteOrder.LITTLE_ENDIAN).int
         return DiscoveredServer(name, packet.address.hostAddress ?: return null, port)
-    }
-
-    /** Subnet broadcast address computed from the phone's own Wi-Fi IP/mask (more reliable across
-     *  devices than the blanket 255.255.255.255, which some OEM Wi-Fi stacks drop). Falls back to
-     *  the global broadcast address if DHCP info isn't available. */
-    private fun broadcastAddresses(wifiManager: WifiManager?): List<InetAddress> {
-        val addresses = mutableListOf<InetAddress>()
-        val dhcp = wifiManager?.dhcpInfo
-        if (dhcp != null && dhcp.ipAddress != 0 && dhcp.netmask != 0) {
-            val broadcastInt = (dhcp.ipAddress and dhcp.netmask) or dhcp.netmask.inv()
-            val bytes = byteArrayOf(
-                (broadcastInt and 0xFF).toByte(),
-                (broadcastInt shr 8 and 0xFF).toByte(),
-                (broadcastInt shr 16 and 0xFF).toByte(),
-                (broadcastInt shr 24 and 0xFF).toByte(),
-            )
-            try {
-                addresses.add(InetAddress.getByAddress(bytes))
-            } catch (_: Exception) { /* fall through to global broadcast below */ }
-        }
-        try {
-            addresses.add(InetAddress.getByName("255.255.255.255"))
-        } catch (_: Exception) { /* ignore */ }
-        return addresses
     }
 }

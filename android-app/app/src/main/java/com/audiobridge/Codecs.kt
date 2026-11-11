@@ -13,7 +13,13 @@ interface PcAudioCodec {
     /** Encode interleaved float PCM (-1..1) into wire bytes. */
     fun encode(interleaved: FloatArray, sampleCountPerChannel: Int): ByteArray
 
-    /** Decode wire bytes into interleaved float PCM, returns sample count per channel. */
+    /**
+     * Decode wire bytes into interleaved float PCM. Returns the number of INTERLEAVED samples
+     * written (frames × channels) — one convention for every codec. It used to be inconsistent
+     * (raw returned the interleaved count, Opus returned frames) while the caller multiplied by
+     * channels again, so raw Wi-Fi/USB audio was written to AudioTrack with a block of zeros after
+     * every real chunk: half-speed playback with silence in between.
+     */
     fun decode(payload: ByteArray, outInterleaved: FloatArray): Int
 }
 
@@ -77,7 +83,7 @@ class OpusPcCodec(sampleRate: Int, private val channels: Int, bitrateBps: Int) :
         val decoded = decoder.decode(payload, 0, payload.size, pcmScratch, 0, frameSize, false)
         val total = decoded * channels
         for (i in 0 until total) outInterleaved[i] = pcmScratch[i] / Short.MAX_VALUE.toFloat()
-        return decoded
+        return total
     }
 }
 

@@ -60,16 +60,39 @@ class MainActivity : ComponentActivity() {
             return perms.toTypedArray()
         }
 
+    /** Bumped each time the PC attaches the phone as a USB accessory; AppRoot reacts by connecting. */
+    private val usbAttachCount = mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
+        noteUsbAttach(intent)
 
         setContent {
             AudioBridgeTheme {
                 Surface(color = MaterialTheme.colorScheme.background) {
-                    AppRoot(settings = settings, requiredPermissions = requiredPermissions)
+                    AppRoot(
+                        settings = settings,
+                        requiredPermissions = requiredPermissions,
+                        usbAttachCount = usbAttachCount.intValue,
+                    )
                 }
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        noteUsbAttach(intent)
+    }
+
+    // The PC server switched this phone into accessory mode and Android launched us for it: plug-and-play,
+    // so switch to USB mode and connect without a tap.
+    private fun noteUsbAttach(intent: Intent?) {
+        if (intent?.action == android.hardware.usb.UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
+            settings.mode = Mode.USB.name
+            usbAttachCount.intValue++
         }
     }
 }
@@ -78,7 +101,7 @@ private enum class Mode { WIFI, USB, BLUETOOTH }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
+private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbAttachCount: Int) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
 
@@ -88,6 +111,9 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
     var btAddress by remember { mutableStateOf(settings.btAddress) }
     var pcBitrate by remember { mutableFloatStateOf(settings.pcBitrateBps / 1000f) }
     var micBitrate by remember { mutableFloatStateOf(settings.micBitrateBps / 1000f) }
+    var bufferMs by remember { mutableFloatStateOf(settings.bufferMs.toFloat()) }
+    var maxRate by remember { mutableIntStateOf(settings.maxRawSampleRate) }
+    var micEnabled by remember { mutableStateOf(settings.micEnabled) }
 
     var status by remember { mutableStateOf("Отключено") }
     var logLines by remember { mutableStateOf(listOf<String>()) }
@@ -125,7 +151,7 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
             // throws SecurityException even though the permission was just granted. A beat on
             // the main looper gives it time to settle. See AudioService crash investigation.
             android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt())
+                startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
             }, 300)
         } else {
             status = "Нет разрешений (микрофон/Bluetooth/уведомления)"
@@ -141,7 +167,7 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
             ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
         }
         if (missing.isEmpty()) {
-            startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt())
+            startBridge(context, mode, host, port.toIntOrNull() ?: 57120, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
         } else {
             permissionLauncher.launch(missing.toTypedArray())
         }
@@ -168,6 +194,14 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
             val found = withContext(Dispatchers.IO) { Discovery.discover(context) }
             discovered = found
             discovering = false
+        }
+    }
+
+    // Accessory attached by the PC: go to USB mode and connect (once per attach, and only if idle).
+    LaunchedEffect(usbAttachCount) {
+        if (usbAttachCount > 0) {
+            mode = Mode.USB
+            if (!status.startsWith("Подключ")) connect()
         }
     }
 
@@ -228,13 +262,35 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
                         onRefresh = ::runDiscovery,
                         onPick = { host = it.host; port = it.port.toString() },
                     )
-                    Mode.USB -> UsbSection(port = port, onPortChange = { port = it }, enabled = !connected)
+                    Mode.USB -> UsbSection()
                     Mode.BLUETOOTH -> BluetoothSection(
                         devices = pairedDevices,
                         selectedAddress = btAddress,
                         onSelect = { btAddress = it },
                         onRefresh = ::refreshPairedDevices,
                         enabled = !connected,
+                    )
+                }
+            }
+
+            ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+                Row(
+                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp).fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("Передавать микрофон на ПК", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            if (micEnabled) "Микрофон телефона будет включён после подключения"
+                            else "Выключено — микрофон не используется",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    Switch(
+                        checked = micEnabled,
+                        enabled = !connected,
+                        onCheckedChange = { micEnabled = it; settings.micEnabled = it },
                     )
                 }
             }
@@ -261,6 +317,10 @@ private fun AppRoot(settings: Settings, requiredPermissions: Array<String>) {
             onPcBitrateChange = { pcBitrate = it; settings.pcBitrateBps = (it * 1000).toInt() },
             micBitrate = micBitrate,
             onMicBitrateChange = { micBitrate = it; settings.micBitrateBps = (it * 1000).toInt() },
+            bufferMs = bufferMs,
+            onBufferMsChange = { bufferMs = it; settings.bufferMs = it.toInt() },
+            maxRate = maxRate,
+            onMaxRateChange = { maxRate = it; settings.maxRawSampleRate = it },
             onDismiss = { showSettingsSheet = false },
         )
     }
@@ -274,6 +334,7 @@ private fun startBridge(
     btAddress: String,
     pcBitrateBps: Int,
     micBitrateBps: Int,
+    bufferMs: Int,
 ) {
     val intent = Intent(context, AudioService::class.java).apply {
         action = AudioService.ACTION_START
@@ -281,6 +342,7 @@ private fun startBridge(
         putExtra(AudioService.EXTRA_PORT, port)
         putExtra(AudioService.EXTRA_PC_BITRATE, pcBitrateBps)
         putExtra(AudioService.EXTRA_MIC_BITRATE, micBitrateBps)
+        putExtra(AudioService.EXTRA_BUFFER_MS, bufferMs)
         if (mode == Mode.WIFI) putExtra(AudioService.EXTRA_HOST, host)
         if (mode == Mode.BLUETOOTH) putExtra(AudioService.EXTRA_BT_ADDRESS, btAddress)
     }
@@ -428,15 +490,46 @@ private fun WifiSection(
 }
 
 @Composable
-private fun UsbSection(port: String, onPortChange: (String) -> Unit, enabled: Boolean) {
+private fun UsbSection() {
+    val context = LocalContext.current
+    // Poll while this section is on screen, so the user can see at a glance whether the PC has put
+    // the phone into accessory mode before pressing Connect.
+    var attached by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            attached = com.audiobridge.transport.UsbTransport.isAccessoryAttached(context)
+            kotlinx.coroutines.delay(1000)
+        }
+    }
+
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         Text(
-            "Подключи кабель, включи USB-отладку и выполни в приложении на ПК \"adb reverse (USB)\". " +
-                "Порт должен совпадать с тем, что указан на ПК.",
+            "Кабелем напрямую — без модема, отладки и adb. Запусти сервер на ПК и подключи кабель: " +
+                "сервер сам переключит телефон в режим USB-аксессуара, а приложение откроется и подключится.",
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        PortField(port, onPortChange, enabled)
+        ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
+            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    Modifier.size(10.dp).clip(CircleShape).background(if (attached) StatusGreen else StatusAmber),
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    if (attached) "ПК подключён по кабелю (режим аксессуара)"
+                    else "ПК пока не переключил телефон в режим аксессуара",
+                    style = MaterialTheme.typography.titleMedium,
+                )
+            }
+        }
+        if (!attached) {
+            Text(
+                "На ПК: драйвер UsbDk установлен (один раз), в сервере включена галочка «USB-кабель», " +
+                    "телефон разблокирован.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
     }
 }
 
@@ -521,10 +614,45 @@ private fun LogCard(lines: List<String>) {
 private fun BitrateSettingsSheet(
     pcBitrate: Float, onPcBitrateChange: (Float) -> Unit,
     micBitrate: Float, onMicBitrateChange: (Float) -> Unit,
+    bufferMs: Float, onBufferMsChange: (Float) -> Unit,
+    maxRate: Int, onMaxRateChange: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text("Буфер воспроизведения: ${bufferMs.toInt()} мс", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Запас против рывков сети. Больше — устойчивее звук, но больше задержка; меньше — наоборот. " +
+                    "Если звук рвётся (особенно по Bluetooth), увеличь. При недогрузке приложение само добавляет запас. " +
+                    "Применяется при следующем подключении.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Slider(
+                value = bufferMs,
+                onValueChange = onBufferMsChange,
+                valueRange = PlayoutBuffer.MIN_TARGET_MS.toFloat()..400f,
+                steps = 36,
+            )
+
+            Spacer(Modifier.height(20.dp))
+
+            Text("Частота потока без сжатия (Wi-Fi/USB)", style = MaterialTheme.typography.titleLarge)
+            Text(
+                "Максимум, который ПК может присылать. 48 кГц — то, во что Android всё равно сводит звук; выше — " +
+                    "только если устройство вывода их реально играет (если нет — приложение само вернётся на 48). " +
+                    "Применяется при следующем подключении.",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
+                listOf(48_000 to "48 кГц", 96_000 to "96 кГц", 192_000 to "192 кГц").forEach { (rate, label) ->
+                    FilterChip(selected = maxRate == rate, onClick = { onMaxRateChange(rate) }, label = { Text(label) })
+                }
+            }
+
+            Spacer(Modifier.height(20.dp))
+
             Text("Качество звука (Bluetooth)", style = MaterialTheme.typography.titleLarge)
             Text(
                 "Действует только для режима Bluetooth — Wi-Fi и USB всегда идут без сжатия.",

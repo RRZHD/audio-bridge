@@ -46,8 +46,20 @@ object FrameIO {
         return Frame(type, payload)
     }
 
-    fun buildConfigPayload(pcAudioBitrateBps: Int): ByteArray =
-        ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(pcAudioBitrateBps).array()
+    /**
+     * CONFIG (phone -> PC, once right after connecting):
+     * `uint32 pcAudioBitrateBps, uint32 maxRawSampleRate, byte nameLen, utf8 name` — the PC reads
+     * as much of it as is present, so older/newer peers interoperate. See PROTOCOL.md.
+     */
+    fun buildConfigPayload(pcAudioBitrateBps: Int, maxRawSampleRate: Int, deviceName: String): ByteArray {
+        val name = deviceName.toByteArray(Charsets.UTF_8).let { if (it.size > 255) it.copyOf(255) else it }
+        return ByteBuffer.allocate(4 + 4 + 1 + name.size).order(ByteOrder.LITTLE_ENDIAN)
+            .putInt(pcAudioBitrateBps)
+            .putInt(maxRawSampleRate)
+            .put(name.size.toByte())
+            .put(name)
+            .array()
+    }
 
     fun parseFormat(payload: ByteArray): PcFormat {
         val buf = ByteBuffer.wrap(payload).order(ByteOrder.LITTLE_ENDIAN)

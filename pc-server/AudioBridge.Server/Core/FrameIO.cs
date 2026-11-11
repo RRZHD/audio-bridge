@@ -36,18 +36,17 @@ public static class FrameIO
 
     public static async Task WriteFrameAsync(Stream stream, FrameType type, ReadOnlyMemory<byte> payload, SemaphoreSlim writeLock, CancellationToken ct)
     {
-        var header = new byte[HeaderSize];
-        header[0] = (byte)type;
-        BitConverter.TryWriteBytes(header.AsSpan(1, 4), payload.Length);
+        // Header + payload go out as ONE write: two writes meant two tiny TCP segments / RFCOMM
+        // packets per frame (50 frames/s), which is costly over adb and Bluetooth.
+        var frame = new byte[HeaderSize + payload.Length];
+        frame[0] = (byte)type;
+        BitConverter.TryWriteBytes(frame.AsSpan(1, 4), payload.Length);
+        payload.Span.CopyTo(frame.AsSpan(HeaderSize));
 
         await writeLock.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-            await stream.WriteAsync(header, ct).ConfigureAwait(false);
-            if (payload.Length > 0)
-            {
-                await stream.WriteAsync(payload, ct).ConfigureAwait(false);
-            }
+            await stream.WriteAsync(frame, ct).ConfigureAwait(false);
             await stream.FlushAsync(ct).ConfigureAwait(false);
         }
         finally

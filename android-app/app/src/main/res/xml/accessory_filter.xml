@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Matches the identification the PC server sends when it switches the phone into accessory mode
+     (AoaHost.cs: manufacturer / model / version). -->
+<resources>
+    <usb-accessory
+        manufacturer="AudioBridge"
+        model="AudioBridge"
+        version="1.0" />
+</resources>
