@@ -25,6 +25,9 @@ public static class VirtualAudio
         "scream",
         "audiorelay",
         "virtual",
+        // Valve's Microsoft-signed driver (installed with Steam Remote Play): what is played to its "speakers"
+        // comes out of its microphone — a free second cable that needs no extra driver.
+        "steam streaming microphone",
     };
 
     // Recognised as virtual (marked in the list) but never auto-picked: Steam's output only exists
