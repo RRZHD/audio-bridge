@@ -363,10 +363,10 @@ public sealed class MainForm : Form
     private void PopulateDevices()
     {
         // Voicemeeter registers ~15 endpoints; only its main input is useful here.
-        _renderDevices = AudioEngine.GetRenderDevices().Where(d => !VoicemeeterRemote.IsClutter(d.FriendlyName)).ToList();
+        _renderDevices = AudioEngine.GetRenderDevices().Where(d => !VoicemeeterRemote.IsClutter(d.Label())).ToList();
 
         // Virtual outputs get a star so they stand out in the list.
-        string FormatDevice(object o) => o is MMDevice d ? (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.FriendlyName : o.ToString() ?? "";
+        string FormatDevice(object o) => o is MMDevice d ? (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.Label() : o.ToString() ?? "";
         _captureDeviceCombo.Format = FormatDevice;
         _captureEndpoints = new MMDeviceEnumerator().EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
         _micOutputDeviceCombo.Format = FormatMicChoice;
@@ -429,13 +429,13 @@ public sealed class MainForm : Form
         if (device != null && VirtualAudio.IsVirtual(device))
         {
             _deviceHint.Text =
-                $"Звук берётся с виртуального выхода «{device.FriendlyName}». Выбери его выходом в Windows " +
+                $"Звук берётся с виртуального выхода «{device.Label()}». Выбери его выходом в Windows " +
                 "(Win+Ctrl+V или Параметры → Звук) — тогда звук пойдёт только на телефон. Чтобы выход назывался " +
                 "как телефон, переименуй его: «Звук Windows…» → устройство → Свойства → имя.";
         }
         else
         {
-            var name = device?.FriendlyName ?? "устройство вывода по умолчанию";
+            var name = device?.Label() ?? "устройство вывода по умолчанию";
             _deviceHint.Text =
                 $"Виртуального выхода нет — копируется звук с «{name}» (он продолжает звучать и на ПК). Чтобы телефон был " +
                 "отдельным выходом Windows, установи любой подписанный виртуальный аудиокабель (например, VB-CABLE) — " +
@@ -446,7 +446,7 @@ public sealed class MainForm : Form
 
     /// <summary>The microphone (as a program such as Discord sees it) that a virtual output turns into, if any.</summary>
     private string? MicNameFor(MMDevice render) =>
-        VirtualAudio.IsCable(render) ? VirtualAudio.FindPartnerCapture(render, _captureEndpoints)?.FriendlyName : null;
+        VirtualAudio.IsCable(render) ? VirtualAudio.FindPartnerCapture(render, _captureEndpoints)?.Label() : null;
 
     /// <summary>List entries are described by what the user gets: a microphone for programs, or sound on a device.</summary>
     private string FormatMicChoice(object o)
@@ -459,9 +459,9 @@ public sealed class MainForm : Form
                 return "Слышать на ПК: устройство вывода по умолчанию";
             case MMDevice d when VirtualAudio.IsCable(d):
                 var busy = ResolveCaptureDevice()?.ID == d.ID ? " (занят звуком для телефона)" : "";
-                return $"Микрофон для программ: «{MicNameFor(d) ?? d.FriendlyName}»{busy}";
+                return $"Микрофон для программ: «{MicNameFor(d) ?? d.Label()}»{busy}";
             case MMDevice d:
-                return $"Слышать на ПК: {d.FriendlyName}";
+                return $"Слышать на ПК: {d.Label()}";
             default:
                 return o.ToString() ?? "";
         }
@@ -470,7 +470,7 @@ public sealed class MainForm : Form
     /// <summary>If the voice goes into Voicemeeter, set its routing (and start it) in the background.</summary>
     private void PrepareMicRoute(object? choice)
     {
-        if (choice is not MMDevice d || !VoicemeeterRemote.IsMainInput(d.FriendlyName)) return;
+        if (choice is not MMDevice d || !VoicemeeterRemote.IsMainInput(d.Label())) return;
         System.Threading.Tasks.Task.Run(() =>
         {
             var msg = VoicemeeterRemote.ConfigureMicRoute();
@@ -497,7 +497,7 @@ public sealed class MainForm : Form
             if (choice is not MicOffChoice) _engine.StartMicPlayback(choice as MMDevice);
             AppendLog(choice is MicOffChoice
                 ? "Микрофон телефона: воспроизведение выключено."
-                : $"Микрофон телефона → {(choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию"}");
+                : $"Микрофон телефона → {(choice as MMDevice)?.Label() ?? "устройство вывода по умолчанию"}");
         }
         catch (Exception ex)
         {
@@ -529,12 +529,12 @@ public sealed class MainForm : Form
         {
             if (capture?.ID == d.ID)
                 return "Этот кабель уже занят: по нему звук идёт на телефон. Голос вернулся бы на телефон. Нужен второй виртуальный кабель.";
-            var mic = MicNameFor(d) ?? d.FriendlyName;
+            var mic = MicNameFor(d) ?? d.Label();
             return $"{phone}В Discord: Настройки → Голос и видео → Устройство ввода → выбери «{mic}». " +
                    "В других программах так же — выбери этот микрофон.";
         }
 
-        var target = (choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию";
+        var target = (choice as MMDevice)?.Label() ?? "устройство вывода по умолчанию";
         return $"{phone}Голос играет на «{target}» — это для прослушивания, не микрофон. Для Discord выбери «Микрофон для программ».";
     }
 
@@ -609,7 +609,7 @@ public sealed class MainForm : Form
             _settings.Port = port;
             _settings.Save();
 
-            AppendLog($"Захват звука: {captureDevice?.FriendlyName ?? "устройство вывода по умолчанию"}");
+            AppendLog($"Захват звука: {captureDevice?.Label() ?? "устройство вывода по умолчанию"}");
 
             // Capture/TCP are core — a failure here really should stop the whole start attempt.
             // Voicemeeter (if running) may hold the cable as its own output; free it before capturing.
@@ -768,6 +768,13 @@ public sealed class MainForm : Form
         for (var i = 0; i < 6; i++) Application.DoEvents();
         _host.Immediate = true;
         var sb = new System.Text.StringBuilder();
+        double Time(Action a) { var t = Stopwatch.StartNew(); for (var i = 0; i < 5; i++) a(); return t.Elapsed.TotalMilliseconds / 5; }
+        sb.AppendLine($"open capture list: {Time(() => { _captureDeviceCombo.OnClick(); _host.ClosePopup(); }):F1} ms");
+        sb.AppendLine($"open mic list: {Time(() => { _micOutputDeviceCombo.OnClick(); _host.ClosePopup(); }):F1} ms");
+        sb.AppendLine($"MicNote (1 s timer): {Time(() => MicNote()):F1} ms");
+        sb.AppendLine($"UpdateDeviceHint: {Time(UpdateDeviceHint):F1} ms");
+        sb.AppendLine($"ResolveCaptureDevice: {Time(() => ResolveCaptureDevice()):F1} ms");
+        sb.AppendLine($"UpdateHero: {Time(UpdateHero):F1} ms");
         foreach (var col in new[] { _root.Left, _root.Right })
         {
             sb.AppendLine($"column {col.W:F0}x{col.H:F0}");
@@ -779,7 +786,7 @@ public sealed class MainForm : Form
                 for (var f = 0; f < 6; f++) _host.Render(); // кадры анимации инерции
                 times.Add(sw.Elapsed.TotalMilliseconds / 6);
             }
-            sb.AppendLine($"  frame ms: avg={times.Average():F2} max={times.Max():F2}");
+            sb.AppendLine($"  frame ms: avg={times.Average():F2} max={times.Max():F2} (layout={_host.DbgLayoutMs:F1} draw={_host.DbgDrawMs:F1} end={_host.DbgEndMs:F1})");
         }
         File.WriteAllText(path, sb.ToString());
     }

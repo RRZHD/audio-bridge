@@ -50,15 +50,15 @@ public static class VirtualAudio
         return -1;
     }
 
-    public static bool IsVirtual(MMDevice device) => Rank(device.FriendlyName) >= 0;
+    public static bool IsVirtual(MMDevice device) => Rank(device.Label()) >= 0;
 
     /// <summary>A real cable (playback side feeds a matching microphone) — Steam's output is virtual but is not one.</summary>
-    public static bool IsCable(MMDevice device) { var r = Rank(device.FriendlyName); return r >= 0 && r < Preferred.Length; }
+    public static bool IsCable(MMDevice device) { var r = Rank(device.Label()); return r >= 0 && r < Preferred.Length; }
 
     /// <summary>The best virtual output to capture automatically, or null if the user has none installed.</summary>
     public static MMDevice? FindBestForAuto(IEnumerable<MMDevice> devices) =>
         devices
-            .Select(d => (device: d, rank: Rank(d.FriendlyName)))
+            .Select(d => (device: d, rank: Rank(d.Label())))
             .Where(x => x.rank >= 0 && x.rank < Preferred.Length)
             .OrderBy(x => x.rank)
             .Select(x => x.device)
@@ -75,8 +75,8 @@ public static class VirtualAudio
     public static MMDevice? FindPartnerCapture(MMDevice render, IReadOnlyList<MMDevice> captures)
     {
         // Voicemeeter has many endpoints in one adapter: its main input pairs with bus B1.
-        if (VoicemeeterRemote.IsMainInput(render.FriendlyName))
-            return captures.FirstOrDefault(c => VoicemeeterRemote.IsMainMic(c.FriendlyName));
+        if (VoicemeeterRemote.IsMainInput(render.Label()))
+            return captures.FirstOrDefault(c => VoicemeeterRemote.IsMainMic(c.Label()));
 
         try
         {
@@ -97,13 +97,13 @@ public static class VirtualAudio
             // fall through to the name heuristic
         }
 
-        var name = render.FriendlyName;
+        var name = render.Label();
         var open = name.LastIndexOf('(');
         var adapter = open >= 0 ? name[open..] : null;
         return captures
-            .Where(c => IsVirtual(c) || (adapter != null && c.FriendlyName.EndsWith(adapter, StringComparison.OrdinalIgnoreCase)))
-            .Where(c => adapter == null || c.FriendlyName.EndsWith(adapter, StringComparison.OrdinalIgnoreCase))
-            .OrderByDescending(c => c.FriendlyName.Contains("output", StringComparison.OrdinalIgnoreCase))
+            .Where(c => IsVirtual(c) || (adapter != null && c.Label().EndsWith(adapter, StringComparison.OrdinalIgnoreCase)))
+            .Where(c => adapter == null || c.Label().EndsWith(adapter, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.Label().Contains("output", StringComparison.OrdinalIgnoreCase))
             .FirstOrDefault();
     }
 }
