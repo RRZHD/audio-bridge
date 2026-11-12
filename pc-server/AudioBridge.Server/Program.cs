@@ -29,6 +29,15 @@ internal static class Program
             form.RenderDemo(args[shot + 1]);
             return;
         }
+        var st = Array.FindIndex(args, a => a.Equals("--scrolltest", StringComparison.OrdinalIgnoreCase));
+        if (st >= 0 && st + 1 < args.Length)
+        {
+            var f = new MainForm { StartPosition = FormStartPosition.Manual, Location = new System.Drawing.Point(40, 40) };
+            f.Show();
+            Application.DoEvents();
+            try { f.ScrollTest(args[st + 1]); } catch (Exception ex) { System.IO.File.WriteAllText(args[st + 1] + ".err", ex.ToString()); }
+            return;
+        }
         Application.Run(new MainForm(autoStart: args.Contains("--autostart", StringComparer.OrdinalIgnoreCase)));
     }
 }

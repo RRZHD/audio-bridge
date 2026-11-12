@@ -19,6 +19,7 @@
     <PackageReference Include="Concentus" Version="2.2.2" />
     <!-- Native libusb-1.0.dll for the USB (Android Open Accessory) host; UsbDk backend preferred. -->
     <PackageReference Include="libusb.runtime" Version="1.0.27" />
+    <PackageReference Include="Vortice.Direct2D1" Version="3.8.3" />
   </ItemGroup>
 
 </Project>

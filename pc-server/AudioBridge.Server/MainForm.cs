@@ -53,20 +53,20 @@ public sealed class MainForm : Form
     // ---- элементы ----------------------------------------------------------------------------
     private SelectBox _captureDeviceCombo = null!;
     private SelectBox _micOutputDeviceCombo = null!;
-    private ThemedLabel _deviceHint = null!;
-    private ThemedLabel _micHint = null!;
+    private TextLabel _deviceHint = null!;
+    private TextLabel _micHint = null!;
     private Card _firewallCard = null!;
-    private ThemedLabel _firewallWarning = null!;
+    private TextLabel _firewallWarning = null!;
     private ToggleSwitch _usbCheck = null!;
-    private ThemedLabel _usbStatus = null!;
+    private TextLabel _usbStatus = null!;
     private ActionButton _usbDkButton = null!;
     private NumberBox _portInput = null!;
     private PowerButton _power = null!;
-    private ThemedLabel _heroTitle = null!;
-    private ThemedLabel _heroSub = null!;
+    private TextLabel _heroTitle = null!;
+    private TextLabel _heroSub = null!;
     private Chip _chipTcp = null!, _chipBle = null!, _chipBt = null!, _chipUsb = null!;
     private ClientList _clients = null!;
-    private TextBox _logBox = null!;
+    private LogView _logBox = null!;
     private readonly List<Pill> _themePills = new();
     private bool _running;
 
@@ -101,14 +101,6 @@ public sealed class MainForm : Form
         _bt.ClientAccepted += OnBluetoothClientAccepted;
         _ble.ClientAccepted += OnBluetoothClientAccepted; // LE rides the same Opus path as classic Bluetooth
 
-        // The first layout passes (wrapping, auto-sizing) must not be visible: show the window only once it is settled.
-        Opacity = 0;
-        Shown += (_, _) => BeginInvoke(new Action(() =>
-        {
-            for (var i = 0; i < 4; i++) Application.DoEvents();
-            Opacity = 1;
-        }));
-
         FormClosing += (_, _) => StopAll();
         Shown += (_, _) => UpdateFirewallWarning();
         if (autoStart) Shown += (_, _) => StartAll(); // `AudioBridgeServer.exe --autostart`
@@ -117,213 +109,134 @@ public sealed class MainForm : Form
 
     // ================================================================================== интерфейс
 
+    private D2DHost _host = null!;
+    private MainRoot _root = null!;
+
     private void BuildUi()
     {
-        SuspendLayout();
+        _root = new MainRoot();
+        _host = new D2DHost(_root);
+        Controls.Add(_host);
 
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
-        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        Controls.Add(root);
-
-        root.Controls.Add(BuildHeader(), 0, 0);
-
-        var body = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty,
-            Padding = new Padding(20, 0, 20, 20),
-        };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 396));
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        root.Controls.Add(body, 0, 1);
-
-        body.Controls.Add(BuildLeft(), 0, 0);
-        body.Controls.Add(BuildRight(), 1, 0);
-
-        ResumeLayout(true);
+        BuildHeader();
+        BuildLeft();
+        BuildRight();
     }
 
-    private Control BuildHeader()
+    private void BuildHeader()
     {
-        var header = new Panel { Dock = DockStyle.Fill, Padding = new Padding(20, 14, 20, 0) };
-
-        var logo = new LogoMark { Location = new Point(20, 18), Size = new Size(40, 40) };
-        header.Controls.Add(logo);
-
-        var title = new ThemedLabel("Audio Bridge Server", LabelRole.Heading) { Location = new Point(72, 16) };
-        var sub = new ThemedLabel("Звук с ПК на телефон — Wi-Fi, USB, Bluetooth", LabelRole.Muted) { Location = new Point(73, 40) };
-        header.Controls.Add(title);
-        header.Controls.Add(sub);
-
         // Тема: как в системе / светлая / тёмная — справа.
-        var themes = new FlowLayoutPanel
-        {
-            AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
-            Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = Color.Transparent, Margin = Padding.Empty,
-        };
         foreach (var (mode, label) in new[] { (ThemeMode.Auto, "Как в системе"), (ThemeMode.Light, "Светлая"), (ThemeMode.Dark, "Тёмная") })
         {
-            var pill = new Pill(label) { Tag = mode, Margin = new Padding(0, 0, 6, 0) };
+            var pill = new Pill(label) { Tag = mode };
             pill.Click += (_, _) => { _settings.Theme = mode; _settings.Save(); Skin.Apply(mode); };
             _themePills.Add(pill);
-            themes.Controls.Add(pill);
+            _root.Header.AddPill(pill);
         }
-        header.Controls.Add(themes);
-        header.Resize += (_, _) => themes.Location = new Point(header.Width - themes.Width - 20, 20);
-        themes.SizeChanged += (_, _) => themes.Location = new Point(header.Width - themes.Width - 20, 20);
-        return header;
     }
 
-    private Control BuildLeft()
+    private void BuildLeft()
     {
-        var host = ScrollColumn(out var column);
-        column.Controls.Add(Wrap(BuildHeroCard()));
-        column.Controls.Add(Wrap(BuildClientsCard()));
-        return host;
+        var col = _root.Left.Content;
+        col.Add(Wrap(BuildHeroCard()));
+        col.Add(Wrap(BuildClientsCard()));
     }
 
-    private Control BuildRight()
+    private void BuildRight()
     {
-        var host = ScrollColumn(out var column);
-        column.Controls.Add(Wrap(BuildSoundCard()));
-        column.Controls.Add(Wrap(BuildConnectCard()));
-        column.Controls.Add(Wrap(BuildLogCard()));
-        return host;
+        var col = _root.Right.Content;
+        col.Add(Wrap(BuildSoundCard()));
+        col.Add(Wrap(BuildConnectCard()));
+        col.Add(Wrap(BuildLogCard()));
     }
 
-    /// <summary>Колонка карточек с прокруткой тонкой полоской (без системного скроллбара).</summary>
-    private static ScrollHost ScrollColumn(out VStack column)
+    private static Card Wrap(Card card)
     {
-        var host = new ScrollHost { Dock = DockStyle.Fill, Margin = Padding.Empty };
-        column = new VStack { Dock = DockStyle.None };
-        host.SetContent(column);
-        return host;
-    }
-
-    private static Control Wrap(Card card)
-    {
-        card.Margin = new Padding(0, 0, 0, 14);
-        card.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+        card.Margin = new Thickness(0, 0, 0, 14);
         return card;
     }
 
-    /// <summary>Карточка с вертикальным содержимым: контролы укладываются сверху вниз, ширина по карточке.</summary>
-    private static Card MakeCard(Padding? padding = null)
-    {
-        var card = new Card { Padding = padding ?? new Padding(18) };
-        return card;
-    }
+    private static Card MakeCard(Thickness? padding = null) => new() { Padding = padding ?? new Thickness(18) };
 
-    private static VStack Stack() => new();
-
-    private static void Add(VStack stack, Control c, int top = 0)
+    /// <summary>Добавляет элемент в стопку с отступом сверху.</summary>
+    private static T Put<T>(VStack stack, T node, float top = 0) where T : Node
     {
-        c.Margin = new Padding(0, top, 0, 0);
-        c.Dock = DockStyle.None;
-        if (c.Anchor != AnchorStyles.None && (c.Anchor & AnchorStyles.Right) == 0 && c is not ActionButton && c is not ToggleSwitch)
-            c.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
-        stack.Controls.Add(c);
-    }
-
-    private static ThemedLabel Wrapped(string text, LabelRole role)
-    {
-        var l = new ThemedLabel(text, role) { AutoSize = true };
-        return l;
+        node.Margin = new Thickness(0, top, 0, 0);
+        stack.Add(node);
+        return node;
     }
 
     private Card BuildHeroCard()
     {
-        var card = MakeCard(new Padding(18, 26, 18, 22));
-        var stack = Stack();
-        card.Controls.Add(stack);
+        var card = MakeCard(new Thickness(18, 26, 18, 22));
+        var stack = card.Add(new VStack());
 
-        _power = new PowerButton { Anchor = AnchorStyles.None };
+        _power = Put(stack, new PowerButton(), 0);
         _power.Click += (_, _) => ToggleRunning();
-        _power.Margin = new Padding(0, 0, 0, 14);
-        stack.Controls.Add(_power);
+        _power.Margin = new Thickness(0, 0, 0, 14);
 
-        _heroTitle = new ThemedLabel("Сервер остановлен", LabelRole.Title) { Anchor = AnchorStyles.None };
-        stack.Controls.Add(_heroTitle);
+        _heroTitle = Put(stack, new TextLabel("Сервер остановлен", LabelRole.Title) { Align = HAlign.Center });
 
-        _heroSub = new ThemedLabel("", LabelRole.Muted) { Anchor = AnchorStyles.None, Wrap = false, MaximumSize = new Size(320, 0) };
-        _heroSub.Margin = new Padding(0, 4, 0, 14);
-        stack.Controls.Add(_heroSub);
+        _heroSub = Put(stack, new TextLabel("", LabelRole.Muted) { Align = HAlign.Center, MaxTextWidth = 320 }, 4);
+        _heroSub.Margin = new Thickness(0, 4, 0, 14);
 
-        var chips = new FlowLayoutPanel
-        {
-            AutoSize = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight,
-            Anchor = AnchorStyles.None, BackColor = Color.Transparent, MaximumSize = new Size(340, 0),
-        };
-        _chipTcp = new Chip("Wi-Fi", Tone.Neutral, dot: true) { Margin = new Padding(3) };
-        _chipBle = new Chip("BT LE", Tone.Neutral, dot: true) { Margin = new Padding(3) };
-        _chipBt = new Chip("BT", Tone.Neutral, dot: true) { Margin = new Padding(3) };
-        _chipUsb = new Chip("USB", Tone.Neutral, dot: true) { Margin = new Padding(3) };
-        chips.Controls.AddRange(new Control[] { _chipTcp, _chipBle, _chipBt, _chipUsb });
-        stack.Controls.Add(chips);
+        var chips = Put(stack, new Flow { Align = HAlign.Center });
+        _chipTcp = chips.Add(new Chip("Wi-Fi", Tone.Neutral, dot: true));
+        _chipBle = chips.Add(new Chip("BT LE", Tone.Neutral, dot: true));
+        _chipBt = chips.Add(new Chip("BT", Tone.Neutral, dot: true));
+        _chipUsb = chips.Add(new Chip("USB", Tone.Neutral, dot: true));
         return card;
     }
 
     private Card BuildClientsCard()
     {
         var card = MakeCard();
-        var stack = Stack();
-        card.Controls.Add(stack);
-        Add(stack, new ThemedLabel("Подключённые телефоны", LabelRole.Heading));
-        _clients = new ClientList { Dock = DockStyle.Fill };
-        Add(stack, _clients, 12);
+        var stack = card.Add(new VStack());
+        Put(stack, new TextLabel("Подключённые телефоны", LabelRole.Heading));
+        _clients = Put(stack, new ClientList(), 12);
         return card;
     }
 
     private Card BuildSoundCard()
     {
         var card = MakeCard();
-        var stack = Stack();
-        card.Controls.Add(stack);
+        var stack = card.Add(new VStack());
 
-        Add(stack, new ThemedLabel("Звук ПК → телефон", LabelRole.Heading));
-        Add(stack, new ThemedLabel("Устройство вывода Windows, с которого сервер берёт звук", LabelRole.Muted) { Wrap = true }, 2);
-        _captureDeviceCombo = new SelectBox();
-        Add(stack, _captureDeviceCombo, 10);
-        _deviceHint = new ThemedLabel("", LabelRole.Muted) { Wrap = true };
-        Add(stack, _deviceHint, 8);
-        var sound = new ActionButton("Звук Windows…", BtnKind.Ghost, 32) { Anchor = AnchorStyles.Left };
+        Put(stack, new TextLabel("Звук ПК → телефон", LabelRole.Heading));
+        Put(stack, new TextLabel("Устройство вывода Windows, с которого сервер берёт звук", LabelRole.Muted) { Wrap = true }, 2);
+        _captureDeviceCombo = Put(stack, new SelectBox(), 10);
+        _deviceHint = Put(stack, new TextLabel("", LabelRole.Muted) { Wrap = true }, 8);
+        var sound = Put(stack, new ActionButton("Звук Windows…", BtnKind.Ghost, 32), 10);
         sound.Click += (_, _) => OpenWindowsSoundSettings();
-        Add(stack, sound, 10);
-        sound.Dock = DockStyle.None; sound.Anchor = AnchorStyles.Left;
 
-        Add(stack, new Divider(), 16);
-        Add(stack, new ThemedLabel("Микрофон телефона → ПК", LabelRole.Heading), 16);
-        Add(stack, new ThemedLabel("Как использовать голос с телефона: как микрофон для Discord и других программ или просто слышать на ПК", LabelRole.Muted) { Wrap = true }, 2);
-        _micOutputDeviceCombo = new SelectBox();
-        Add(stack, _micOutputDeviceCombo, 10);
-        _micHint = new ThemedLabel("", LabelRole.Muted) { Wrap = true };
-        Add(stack, _micHint, 8);
+        Put(stack, new Divider(), 16);
+        Put(stack, new TextLabel("Микрофон телефона → ПК", LabelRole.Heading), 16);
+        Put(stack, new TextLabel("Как использовать голос с телефона: как микрофон для Discord и других программ или просто слышать на ПК", LabelRole.Muted) { Wrap = true }, 2);
+        _micOutputDeviceCombo = Put(stack, new SelectBox(), 10);
+        _micHint = Put(stack, new TextLabel("", LabelRole.Muted) { Wrap = true }, 8);
         return card;
     }
 
     private Card BuildConnectCard()
     {
         var card = MakeCard();
-        var stack = Stack();
-        card.Controls.Add(stack);
+        var stack = card.Add(new VStack());
 
-        Add(stack, new ThemedLabel("Подключения", LabelRole.Heading));
+        Put(stack, new TextLabel("Подключения", LabelRole.Heading));
 
         // Порт: подпись и пояснение слева, поле справа.
-        var portText = Stack();
-        Add(portText, new ThemedLabel("TCP-порт", LabelRole.Text));
-        Add(portText, new ThemedLabel("Для Wi-Fi и локальной сети; телефон находит его сам", LabelRole.Muted) { Wrap = true }, 2);
+        var portText = new VStack();
+        Put(portText, new TextLabel("TCP-порт", LabelRole.Text));
+        Put(portText, new TextLabel("Для Wi-Fi и локальной сети; телефон находит его сам", LabelRole.Muted) { Wrap = true }, 2);
         _portInput = new NumberBox { Value = DefaultPort };
-        Add(stack, new SplitRow(portText, _portInput), 12);
+        Put(stack, new SplitRow(portText, _portInput), 12);
 
-        Add(stack, new Divider(), 14);
+        Put(stack, new Divider(), 14);
 
         // USB: подпись и статус слева, переключатель справа.
-        var usbText = Stack();
-        Add(usbText, new ThemedLabel("USB-кабель", LabelRole.Text));
-        _usbStatus = new ThemedLabel("Подключать телефон напрямую, без модема и adb", LabelRole.Muted) { Wrap = true };
-        Add(usbText, _usbStatus, 2);
+        var usbText = new VStack();
+        Put(usbText, new TextLabel("USB-кабель", LabelRole.Text));
+        _usbStatus = Put(usbText, new TextLabel("Подключать телефон напрямую, без модема и adb", LabelRole.Muted) { Wrap = true }, 2);
         _usbCheck = new ToggleSwitch { Checked = _settings.UsbEnabled };
         _usbCheck.CheckedChanged += (_, _) =>
         {
@@ -337,63 +250,46 @@ public sealed class MainForm : Form
             if (!_usbCheck.Checked) _usbStatus.Text = "Подключать телефон напрямую, без модема и adb";
             UpdateHero();
         };
-        var usbRow = new SplitRow(usbText, _usbCheck);
-        Add(stack, usbRow, 14);
+        Put(stack, new SplitRow(usbText, _usbCheck), 14);
 
-        _usbDkButton = new ActionButton("Настроить USB: драйвер UsbDk (один раз, нужны права администратора)", BtnKind.Ghost, 32) { Anchor = AnchorStyles.Left };
-        _usbDkButton.FitText();
+        _usbDkButton = Put(stack, new ActionButton("Настроить USB: драйвер UsbDk (один раз, нужны права администратора)", BtnKind.Ghost, 32), 10);
         _usbDkButton.Click += (_, _) => SetupUsb();
         _usbDkButton.Visible = !AoaHost.IsUsbDkInstalled() || !AoaHost.AccessoryHideRulesInstalled();
-        Add(stack, _usbDkButton, 10);
-        _usbDkButton.Dock = DockStyle.None; _usbDkButton.Anchor = AnchorStyles.Left;
 
         // Брандмауэр.
-        _firewallCard = new Card { Tone = CardTone.Danger, Padding = new Padding(14), Visible = false };
-        var fw = Stack();
-        _firewallCard.Controls.Add(fw);
-        _firewallWarning = new ThemedLabel(
+        _firewallCard = new Card { Tone = CardTone.Danger, Padding = new Thickness(14), Visible = false };
+        var fw = _firewallCard.Add(new VStack());
+        _firewallWarning = Put(fw, new TextLabel(
             "Брандмауэр Windows блокирует входящие подключения в «общедоступных» сетях — так Windows часто помечает " +
             "сеть раздачи Wi-Fi, поэтому телефон не сможет найти или открыть сервер (на USB-кабель это не влияет).", LabelRole.Danger)
-        { Wrap = true };
-        Add(fw, _firewallWarning);
-        var fwButton = new ActionButton("Разрешить в брандмауэре (нужны права администратора)", BtnKind.Primary, 32) { Anchor = AnchorStyles.Left };
-        fwButton.FitText();
+        { Wrap = true });
+        var fwButton = Put(fw, new ActionButton("Разрешить в брандмауэре (нужны права администратора)", BtnKind.Primary, 32), 10);
         fwButton.Click += (_, _) =>
         {
             if (FirewallHelper.AllowThroughFirewallElevated()) AppendLog("Брандмауэр: правило для сервера создано.");
             else AppendLog("Брандмауэр: правило не создано (отказ в UAC или ошибка).");
             UpdateFirewallWarning();
         };
-        Add(fw, fwButton, 10);
-        fwButton.Dock = DockStyle.None; fwButton.Anchor = AnchorStyles.Left;
-        Add(stack, _firewallCard, 14);
+        Put(stack, _firewallCard, 14);
         return card;
     }
 
     private Card BuildLogCard()
     {
         var card = MakeCard();
-        var stack = Stack();
-        card.Controls.Add(stack);
+        var stack = card.Add(new VStack());
 
-        var head = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = Color.Transparent, Margin = Padding.Empty };
-        head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        head.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        head.Controls.Add(new ThemedLabel("Лог", LabelRole.Heading), 0, 0);
-        var clear = new ActionButton("Очистить", BtnKind.Ghost, 28) { Anchor = AnchorStyles.Right };
-        clear.FitText();
-        clear.Click += (_, _) => _logBox.Clear();
-        head.Controls.Add(clear, 1, 0);
-        Add(stack, head);
-
-        _logBox = new TextBox
+        var buttons = new HRow();
+        var copy = buttons.Add(new ActionButton("Копировать", BtnKind.Ghost, 28));
+        copy.Click += (_, _) =>
         {
-            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.None, BorderStyle = BorderStyle.None,
-            Height = 230, Font = Skin.Mono(9f), WordWrap = true,
+            try { if (_logBox.AllText.Length > 0) Clipboard.SetText(_logBox.AllText); } catch { /* буфер занят */ }
         };
-        Add(stack, _logBox, 10);
-        _logBox.Dock = DockStyle.Fill;
-        _logBox.HandleCreated += (_, _) => Skin.StyleScroll(_logBox);
+        var clear = buttons.Add(new ActionButton("Очистить", BtnKind.Ghost, 28));
+        clear.Click += (_, _) => _logBox.Clear();
+        Put(stack, new SplitRow(new TextLabel("Лог", LabelRole.Heading), buttons));
+
+        _logBox = Put(stack, new LogView(230), 10);
         return card;
     }
 
@@ -404,26 +300,9 @@ public sealed class MainForm : Form
         var p = Skin.P;
         BackColor = p.Bg;
         ForeColor = p.Text;
-        if (_logBox != null)
-        {
-            _logBox.BackColor = p.Surface;
-            _logBox.ForeColor = p.Text;
-            if (_logBox.IsHandleCreated) Skin.StyleScroll(_logBox);
-        }
         foreach (var pill in _themePills) pill.Selected = (ThemeMode)pill.Tag! == Skin.Mode;
         if (IsHandleCreated) Skin.StyleWindow(this);
-        Invalidate(true);
-    }
-
-    /// <summary>Композитная отрисовка окна: дети рисуются во внеэкранный буфер целиком, без мерцания и «проявления» текста.</summary>
-    protected override CreateParams CreateParams
-    {
-        get
-        {
-            var cp = base.CreateParams;
-            cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
-            return cp;
-        }
+        _host?.Invalidate();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -431,8 +310,6 @@ public sealed class MainForm : Form
         base.OnHandleCreated(e);
         Skin.StyleWindow(this);
     }
-
-    // ---- «герой»: состояние сервера -------------------------------------------------------------
 
     private void UpdateHero()
     {
@@ -469,7 +346,6 @@ public sealed class MainForm : Form
         _chipBle.Tone = on ? Tone.Success : Tone.Neutral;
         _chipBt.Tone = on ? Tone.Success : Tone.Neutral;
         _chipUsb.Tone = on && _usbCheck.Checked ? Tone.Success : Tone.Neutral;
-        foreach (var c in new[] { _chipTcp, _chipBle, _chipBt, _chipUsb }) c.Parent?.PerformLayout();
     }
 
     private void RefreshClientList()
@@ -547,6 +423,8 @@ public sealed class MainForm : Form
 
     private void UpdateDeviceHint()
     {
+        _captureDeviceCombo.InvalidateText();
+        _micOutputDeviceCombo.InvalidateText();
         var device = ResolveCaptureDevice();
         if (device != null && VirtualAudio.IsVirtual(device))
         {
@@ -874,7 +752,7 @@ public sealed class MainForm : Form
             BeginInvoke(() => AppendLog(line));
             return;
         }
-        _logBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
+        _logBox.AppendLine($"[{DateTime.Now:HH:mm:ss}] {line}");
     }
 
     // ---- снимок окна для проверки внешнего вида (--shot) ------------------------------------------
@@ -882,7 +760,50 @@ public sealed class MainForm : Form
     /// <summary>Заполняет окно примерами и сохраняет картинку; сервер при этом не запускается.</summary>
     internal static int ShotHeight = 960; // taller than the real window by default, so every card is visible
 
+    /// <summary>`--scrolltest <file.txt>`: scrolls every column programmatically and writes the time per step.</summary>
+    internal void ScrollTest(string path)
+    {
+        FillDemo();
+        ClientSize = new Size(1080, 640);
+        for (var i = 0; i < 6; i++) Application.DoEvents();
+        _host.Immediate = true;
+        var sb = new System.Text.StringBuilder();
+        foreach (var col in new[] { _root.Left, _root.Right })
+        {
+            sb.AppendLine($"column {col.W:F0}x{col.H:F0}");
+            var times = new List<double>();
+            for (var i = 0; i < 60; i++)
+            {
+                var sw = Stopwatch.StartNew();
+                col.OnWheel(i < 30 ? -120 : 120);   // как шаг колеса мыши
+                for (var f = 0; f < 6; f++) _host.Render(); // кадры анимации инерции
+                times.Add(sw.Elapsed.TotalMilliseconds / 6);
+            }
+            sb.AppendLine($"  frame ms: avg={times.Average():F2} max={times.Max():F2}");
+        }
+        File.WriteAllText(path, sb.ToString());
+    }
+
     internal void RenderDemo(string path)
+    {
+        FillDemo();
+        var popup = Environment.GetEnvironmentVariable("AB_SHOT") ?? "";
+        ClientSize = new Size(1080, ShotHeight);
+        for (var i = 0; i < 6; i++) Application.DoEvents();
+        _host.Render();
+        if (popup.Contains("mic")) _micOutputDeviceCombo.OnClick();
+        if (popup.Contains("port")) _host.SetFocus(_portInput, true);
+        if (popup.Contains("scroll"))
+        {
+            _root.Right.OnWheel(-3000);
+            for (var i = 0; i < 80; i++) { Application.DoEvents(); System.Threading.Thread.Sleep(16); }
+        }
+        Application.DoEvents();
+        using var bmp = _host.Snapshot();
+        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+
+    private void FillDemo()
     {
         _running = true;
         _clients.SetClients(new List<(string, string)> { ("Ruslan Xperia", "Bluetooth LE (Ruslan Xperia)") });
@@ -896,50 +817,6 @@ public sealed class MainForm : Form
             "[09:41:03] Bluetooth LE: ищу телефон (приложение → режим «BT LE» → «Подключиться»)\r\n" +
             "[09:41:11] Bluetooth LE: подключён к «Ruslan Xperia», MTU 517\r\n";
         _firewallCard.Visible = true;
-        ClientSize = new Size(1080, ShotHeight);
-        PerformLayout();
-        for (var i = 0; i < 4; i++) Application.DoEvents();
-        Application.DoEvents();
-        Invalidate(true);
-        Application.DoEvents();
-        var bmp = new Bitmap(ClientSize.Width, ClientSize.Height);
-        DrawToBitmap(bmp, new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
-        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
     }
 }
 
-/// <summary>Логотип: скруглённый квадрат акцентом и четыре полоски эквалайзера.</summary>
-internal sealed class LogoMark : SkinControl
-{
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        var g = e.Graphics;
-        g.SmoothingMode = SmoothingMode.AntiAlias;
-        var p = Skin.P;
-        using (var path = Skin.Round(new RectangleF(0, 0, Width - 1, Height - 1), 9))
-        using (var b = new SolidBrush(p.Accent))
-            g.FillPath(b, path);
-        using var bar = new SolidBrush(Color.White);
-        var cx = Width / 2f;
-        var heights = new[] { 0.28f, 0.55f, 0.4f, 0.22f };
-        var xs = new[] { -9f, -3f, 3f, 9f };
-        for (var i = 0; i < 4; i++)
-        {
-            var h = Height * heights[i];
-            using var rp = Skin.Round(new RectangleF(cx + xs[i] - 1.5f, (Height - h) / 2f, 3f, h), 1.5f);
-            g.FillPath(bar, rp);
-        }
-    }
-}
-
-/// <summary>Тонкая линия между блоками карточки.</summary>
-internal sealed class Divider : SkinControl
-{
-    public Divider() { Height = 1; }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        using var b = new SolidBrush(Skin.P.Line);
-        e.Graphics.FillRectangle(b, 0, 0, Width, 1);
-    }
-}
