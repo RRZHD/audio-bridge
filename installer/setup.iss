@@ -8,7 +8,7 @@
 ; Output: installer\output\AudioBridgeServer-Setup.exe
 
 #define MyAppName "Audio Bridge Server"
-#define MyAppVersion "1.2.0"
+#define MyAppVersion "1.2.1"
 #define MyAppPublisher "RRZHD"
 #define MyAppURL "https://github.com/RRZHD/audio-bridge"
 #define MyAppExeName "AudioBridgeServer.exe"
