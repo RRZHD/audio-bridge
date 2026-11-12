@@ -734,6 +734,9 @@ public sealed class MainForm : Form
             AppendLog($"Захват звука: {captureDevice?.FriendlyName ?? "устройство вывода по умолчанию"}");
 
             // Capture/TCP are core — a failure here really should stop the whole start attempt.
+            // Voicemeeter (if running) may hold the cable as its own output; free it before capturing.
+            if (captureDevice != null && VirtualAudio.IsVirtual(captureDevice) && VoicemeeterRemote.ConfigureMicRoute(routeMic: false) is { } vmNote)
+                AppendLog(vmNote);
             _engine.StartCapture(captureDevice);
             _volume.Attach(captureDevice ?? new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Console));
             if (playMic) { PrepareMicRoute(micChoice); _engine.StartMicPlayback(micOutDevice); }

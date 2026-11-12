@@ -51,13 +51,16 @@ public static class VoicemeeterRemote
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int RunVoicemeeter(int type);
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int GetVmType(out int type);
     [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)] private delegate int SetParameters(string script);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall, CharSet = CharSet.Ansi)] private delegate int GetString(string param, byte[] buffer);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int IsDirty();
 
     /// <summary>
     /// Routes the virtual input strip to B1 only (not to the speakers). Starts Voicemeeter if needed.
     /// Returns a short message for the log, or null if Voicemeeter isn't installed.
     /// </summary>
-    public static string? ConfigureMicRoute()
+    public static string? ConfigureMicRoute(bool routeMic = true)
     {
+        // routeMic = false: only let go of virtual cables Voicemeeter has taken (and never start it).
         var path = DllPath();
         if (path == null) return null;
         var lib = IntPtr.Zero;
@@ -77,7 +80,12 @@ public static class VoicemeeterRemote
             var rc = login();
             if (rc < 0) return "Voicemeeter: не удалось подключиться к программе.";
             loggedIn = true;
-            if (rc == 1) { run(1); wasRunning = false; } // not running: start the Standard edition
+            if (rc == 1) // not running
+            {
+                if (!routeMic) return null;
+                run(1); // start the Standard edition
+                wasRunning = false;
+            }
 
             var type = 0;
             for (var i = 0; i < 40 && type == 0; i++) // up to ~10 s while it starts
@@ -91,12 +99,31 @@ public static class VoicemeeterRemote
             var strip = type switch { 1 => 2, 2 => 3, _ => 5 };
             var buses = type switch { 1 => 1, 2 => 3, _ => 5 };
             var script = "";
-            for (var a = 1; a <= buses; a++) script += $"Strip[{strip}].A{a}=0;";
-            script += $"Strip[{strip}].B1=1;";
-            if (type >= 2) script += $"Strip[{strip}].B2=0;";
-            if (type >= 3) script += $"Strip[{strip}].B3=0;";
+            // On install Voicemeeter grabs a virtual cable (e.g. the one that carries sound to the phone) as its own
+            // hardware output, in exclusive mode, so the cable can no longer be captured. Let go of virtual outputs.
+            var getString = Marshal.GetDelegateForFunctionPointer<GetString>(NativeLibrary.GetExport(lib, "VBVMR_GetParameterStringA"));
+            var dirty = Marshal.GetDelegateForFunctionPointer<IsDirty>(NativeLibrary.GetExport(lib, "VBVMR_IsParametersDirty"));
+            dirty();
+            var allBuses = type switch { 1 => 2, 2 => 5, _ => 8 };
+            for (var b = 0; b < allBuses; b++)
+            {
+                var buf = new byte[512];
+                if (getString($"Bus[{b}].device.name", buf) != 0) continue;
+                var name = System.Text.Encoding.Default.GetString(buf).TrimEnd('\0');
+                if (name.Length > 0 && VirtualAudio.Rank(name) >= 0)
+                    script += $"Bus[{b}].device.wasapi=;Bus[{b}].device.wdm=;Bus[{b}].device.mme=;Bus[{b}].device.ks=;";
+            }
+            if (routeMic)
+            {
+                for (var a = 1; a <= buses; a++) script += $"Strip[{strip}].A{a}=0;";
+                script += $"Strip[{strip}].B1=1;";
+                if (type >= 2) script += $"Strip[{strip}].B2=0;";
+                if (type >= 3) script += $"Strip[{strip}].B3=0;";
+            }
+            if (script.Length == 0) return null;
             set(script);
             Thread.Sleep(600); // a Logout right after the call can drop it; let Voicemeeter apply the script first
+            if (!routeMic) return "Voicemeeter занимал виртуальный кабель своим выходом — освободила, чтобы звук шёл на телефон.";
             return wasRunning ? "Voicemeeter: маршрут микрофона настроен (вход → B1)."
                               : "Voicemeeter запущен, маршрут микрофона настроен (вход → B1).";
         }
