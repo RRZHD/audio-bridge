@@ -1,84 +1,57 @@
 package com.audiobridge
 
-import android.Manifest
-import android.bluetooth.BluetoothAdapter
-import android.bluetooth.BluetoothDevice
 import android.content.Intent
-import android.content.pm.PackageManager
-import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
-import androidx.activity.compose.setContent
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Bluetooth
-import androidx.compose.material.icons.filled.Cable
-import androidx.compose.material.icons.filled.PowerSettingsNew
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Search
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.SystemUpdate
-import androidx.compose.material.icons.filled.Wifi
-import androidx.compose.material3.*
-import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
-import com.audiobridge.transport.DiscoveredServer
-import com.audiobridge.transport.Discovery
+import com.audiobridge.ui.AppState
+import com.audiobridge.ui.HomeScreen
+import com.audiobridge.ui.Link
+import com.audiobridge.ui.Mode
+import com.audiobridge.ui.SettingsScreen
 import com.audiobridge.ui.theme.AudioBridgeTheme
-import com.audiobridge.ui.theme.StatusAmber
-import com.audiobridge.ui.theme.StatusGreen
-import com.audiobridge.ui.theme.StatusRed
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
+import com.audiobridge.ui.theme.LocalPalette
 
 class MainActivity : ComponentActivity() {
 
     private lateinit var settings: Settings
 
-    private val requiredPermissions: Array<String>
-        get() {
-            val perms = mutableListOf(Manifest.permission.RECORD_AUDIO)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                perms.add(Manifest.permission.BLUETOOTH_CONNECT)
-                perms.add(Manifest.permission.BLUETOOTH_ADVERTISE) // Bluetooth LE mode
-            }
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) perms.add(Manifest.permission.POST_NOTIFICATIONS)
-            return perms.toTypedArray()
-        }
-
-    /** Bumped each time the PC attaches the phone as a USB accessory; AppRoot reacts by connecting. */
-    private val usbAttachCount = mutableIntStateOf(0)
+    /** Растёт при каждом подключении ПК как USB-аксессуара и при запуске из плитки: экран реагирует и подключается. */
+    private val connectRequests = mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         settings = Settings(this)
-        noteUsbAttach(intent)
+        noteLaunchIntent(intent)
 
         setContent {
-            AudioBridgeTheme {
-                Surface(color = MaterialTheme.colorScheme.background) {
-                    AppRoot(
-                        settings = settings,
-                        requiredPermissions = requiredPermissions,
-                        usbAttachCount = usbAttachCount.intValue,
-                    )
+            // Тема читается из настроек на каждый кадр: смена в «Настройках» применяется сразу.
+            var themeId by remember { mutableStateOf(settings.themeId) }
+            AudioBridgeTheme(themeId = themeId) {
+                Surface(modifier = androidx.compose.ui.Modifier.fillMaxSize(), color = LocalPalette.current.bg) {
+                    AppRoot(settings = settings, connectRequests = connectRequests.intValue, onThemeChanged = { themeId = it })
                 }
             }
         }
@@ -87,628 +60,93 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        noteUsbAttach(intent)
+        noteLaunchIntent(intent)
     }
 
-    // The PC server switched this phone into accessory mode and Android launched us for it: plug-and-play,
-    // so switch to USB mode and connect without a tap.
-    private fun noteUsbAttach(intent: Intent?) {
-        if (intent?.action == android.hardware.usb.UsbManager.ACTION_USB_ACCESSORY_ATTACHED) {
-            settings.mode = Mode.USB.name
-            usbAttachCount.intValue++
+    // PC switched the phone into accessory mode and Android launched us (USB), or the Quick Settings
+    // tile asked to start: plug-and-play, connect without a tap.
+    private fun noteLaunchIntent(intent: Intent?) {
+        when {
+            intent?.action == android.hardware.usb.UsbManager.ACTION_USB_ACCESSORY_ATTACHED -> {
+                settings.mode = Mode.USB.name
+                connectRequests.intValue++
+            }
+            intent?.getBooleanExtra(EXTRA_CONNECT, false) == true -> {
+                intent.removeExtra(EXTRA_CONNECT)
+                connectRequests.intValue++
+            }
         }
+    }
+
+    companion object {
+        /** Запуск из плитки быстрых настроек: открыть приложение и сразу подключить. */
+        const val EXTRA_CONNECT = "com.audiobridge.extra.CONNECT"
     }
 }
 
-private enum class Mode { WIFI, USB, BLUETOOTH, BLE }
+private enum class Screen { HOME, SETTINGS }
 
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun AppRoot(settings: Settings, requiredPermissions: Array<String>, usbAttachCount: Int) {
+private fun AppRoot(settings: Settings, connectRequests: Int, onThemeChanged: (String) -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    var screen by remember { mutableStateOf(Screen.HOME) }
 
-    var mode by remember { mutableStateOf(runCatching { Mode.valueOf(settings.mode) }.getOrDefault(Mode.WIFI)) }
-    var host by remember { mutableStateOf(settings.host) }
-    var port by remember { mutableStateOf(settings.port.toString()) }
-    var btAddress by remember { mutableStateOf(settings.btAddress) }
-    var pcBitrate by remember { mutableFloatStateOf(settings.pcBitrateBps / 1000f) }
-    var micBitrate by remember { mutableFloatStateOf(settings.micBitrateBps / 1000f) }
-    var bufferMs by remember { mutableFloatStateOf(settings.bufferMs.toFloat()) }
-    var maxRate by remember { mutableIntStateOf(settings.maxRawSampleRate) }
-    var wifiQuality by remember { mutableIntStateOf(settings.wifiQuality) }
-    var micEnabled by remember { mutableStateOf(settings.micEnabled) }
-
-    var status by remember { mutableStateOf("Отключено") }
-    var logLines by remember { mutableStateOf(listOf<String>()) }
-    val connected = status.startsWith("Подключено")
-    // Connecting or reconnecting counts as "running": the button must offer to stop it (a link that
-    // never comes up would otherwise leave no way out but killing the app).
-    val active = status.startsWith("Подключ") || status.startsWith("Переподключ")
-
-    var discovered by remember { mutableStateOf(listOf<DiscoveredServer>()) }
-    var discovering by remember { mutableStateOf(false) }
-
-    var pairedDevices by remember { mutableStateOf(listOf<BluetoothDevice>()) }
-    var showSettingsSheet by remember { mutableStateOf(false) }
-
-    var updateInfo by remember { mutableStateOf<UpdateInfo?>(null) }
-    var updateDismissed by remember { mutableStateOf(false) }
-    var downloadingUpdate by remember { mutableStateOf(false) }
-
-    LaunchedEffect(Unit) {
-        val info = withContext(Dispatchers.IO) { UpdateChecker.checkForUpdate(BuildConfig.VERSION_NAME) }
-        if (info != null) updateInfo = info
+    // The state needs the permission launcher, the launcher needs the state: tie them with a holder.
+    var holder by remember { mutableStateOf<AppState?>(null) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
+        holder?.onPermissionsResult(results.values.all { it })
+    }
+    val state = remember {
+        AppState(context, settings, scope, askPermissions = { permissionLauncher.launch(it) }).also { holder = it }
     }
 
     DisposableEffect(Unit) {
-        StatusBus.statusListener = { status = it }
-        StatusBus.logListener = { line -> logLines = (logLines + line).takeLast(30) }
+        StatusBus.statusListener = { state.status = it }
+        StatusBus.logListener = { line -> state.logLines = (state.logLines + line).takeLast(60) }
         onDispose {
             StatusBus.statusListener = null
             StatusBus.logListener = null
         }
     }
 
-    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { results ->
-        if (results.values.all { it }) {
-            // Starting the foreground service synchronously in this callback can race with
-            // ActivityManagerService's internal permission cache right after a fresh grant —
-            // it hasn't always caught up yet, so onStartCommand's startForeground(microphone)
-            // throws SecurityException even though the permission was just granted. A beat on
-            // the main looper gives it time to settle. See AudioService crash investigation.
-            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
-                startBridge(context, mode, host, port.toIntOrNull() ?: 45121, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
-            }, 300)
-        } else {
-            status = "Нет разрешений (микрофон/Bluetooth/уведомления)"
-        }
-    }
-
-    fun connect() {
-        settings.mode = mode.name
-        settings.host = host
-        settings.port = port.toIntOrNull() ?: 45121
-        settings.btAddress = btAddress
-        val missing = requiredPermissions.filter {
-            ContextCompat.checkSelfPermission(context, it) != PackageManager.PERMISSION_GRANTED
-        }
-        if (missing.isEmpty()) {
-            startBridge(context, mode, host, port.toIntOrNull() ?: 45121, btAddress, (pcBitrate * 1000).toInt(), (micBitrate * 1000).toInt(), bufferMs.toInt())
-        } else {
-            permissionLauncher.launch(missing.toTypedArray())
-        }
-    }
-
-    fun disconnect() {
-        context.startService(Intent(context, AudioService::class.java).apply { action = AudioService.ACTION_STOP })
-    }
-
-    fun refreshPairedDevices() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-            ContextCompat.checkSelfPermission(context, Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
-        ) {
-            permissionLauncher.launch(arrayOf(Manifest.permission.BLUETOOTH_CONNECT))
-            return
-        }
-        @Suppress("MissingPermission")
-        pairedDevices = BluetoothAdapter.getDefaultAdapter()?.bondedDevices?.toList() ?: emptyList()
-    }
-
-    fun runDiscovery() {
-        discovering = true
-        scope.launch {
-            val found = withContext(Dispatchers.IO) { Discovery.discover(context) }
-            discovered = found
-            discovering = false
-        }
-    }
-
-    // Accessory attached by the PC: go to USB mode and connect (once per attach, and only if idle).
-    LaunchedEffect(usbAttachCount) {
-        if (usbAttachCount > 0) {
-            mode = Mode.USB
-            if (!status.startsWith("Подключ")) connect()
-        }
-    }
-
-    LaunchedEffect(mode) {
-        if (mode == Mode.BLUETOOTH && pairedDevices.isEmpty()) refreshPairedDevices()
-        if (mode == Mode.WIFI && discovered.isEmpty() && !discovering) runDiscovery()
-    }
-
-    Scaffold(
-        topBar = {
-            CenterAlignedTopAppBar(
-                title = { Text("Audio Bridge") },
-                actions = {
-                    IconButton(onClick = { showSettingsSheet = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Настройки битрейта")
-                    }
-                },
-            )
-        },
-    ) { padding ->
-        Column(
-            modifier = Modifier
-                .padding(padding)
-                .padding(horizontal = 16.dp)
-                .verticalScroll(rememberScrollState()),
-            verticalArrangement = Arrangement.spacedBy(16.dp),
-        ) {
-            Spacer(Modifier.height(4.dp))
-
-            val info = updateInfo
-            if (info != null && !updateDismissed) {
-                UpdateBanner(
-                    info = info,
-                    downloading = downloadingUpdate,
-                    onDismiss = { updateDismissed = true },
-                    onUpdate = {
-                        if (UpdateInstaller.canInstallPackages(context)) {
-                            downloadingUpdate = true
-                            UpdateInstaller.downloadAndInstall(context, info.apkUrl, info.version)
-                        } else {
-                            context.startActivity(UpdateInstaller.installPermissionSettingsIntent(context))
-                        }
-                    },
-                )
-            }
-
-            StatusCard(status = status, connected = connected)
-
-            ModeSelector(mode = mode, enabled = !active, onSelect = { mode = it })
-
-            AnimatedContent(targetState = mode, label = "mode-fields") { m ->
-                when (m) {
-                    Mode.WIFI -> WifiSection(
-                        host = host, onHostChange = { host = it },
-                        port = port, onPortChange = { port = it },
-                        discovered = discovered, discovering = discovering,
-                        enabled = !active,
-                        onRefresh = ::runDiscovery,
-                        onPick = { host = it.host; port = it.port.toString() },
-                    )
-                    Mode.USB -> UsbSection()
-                    Mode.BLE -> BleSection()
-                    Mode.BLUETOOTH -> BluetoothSection(
-                        devices = pairedDevices,
-                        selectedAddress = btAddress,
-                        onSelect = { btAddress = it },
-                        onRefresh = ::refreshPairedDevices,
-                        enabled = !active,
-                    )
-                }
-            }
-
-            ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-                Row(
-                    Modifier.padding(horizontal = 16.dp, vertical = 10.dp).fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        Text("Передавать микрофон на ПК", style = MaterialTheme.typography.titleMedium)
-                        Text(
-                            if (micEnabled) "Микрофон телефона будет включён после подключения"
-                            else "Выключено — микрофон не используется",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
-                    }
-                    Switch(
-                        checked = micEnabled,
-                        enabled = !active,
-                        onCheckedChange = { micEnabled = it; settings.micEnabled = it },
-                    )
-                }
-            }
-
-            Button(
-                onClick = { if (active) disconnect() else connect() },
-                modifier = Modifier.fillMaxWidth().height(52.dp),
-                shape = RoundedCornerShape(14.dp),
-                colors = if (active) ButtonDefaults.buttonColors(containerColor = StatusRed) else ButtonDefaults.buttonColors(),
-            ) {
-                Icon(Icons.Filled.PowerSettingsNew, contentDescription = null)
-                Spacer(Modifier.width(8.dp))
-                Text(if (active) "Отключиться" else "Подключиться", style = MaterialTheme.typography.titleMedium)
-            }
-
-            LogCard(logLines)
-            Spacer(Modifier.height(8.dp))
-        }
-    }
-
-    if (showSettingsSheet) {
-        BitrateSettingsSheet(
-            pcBitrate = pcBitrate,
-            onPcBitrateChange = { pcBitrate = it; settings.pcBitrateBps = (it * 1000).toInt() },
-            micBitrate = micBitrate,
-            onMicBitrateChange = { micBitrate = it; settings.micBitrateBps = (it * 1000).toInt() },
-            bufferMs = bufferMs,
-            onBufferMsChange = { bufferMs = it; settings.bufferMs = it.toInt() },
-            maxRate = maxRate,
-            onMaxRateChange = { maxRate = it; settings.maxRawSampleRate = it },
-            wifiQuality = wifiQuality,
-            onWifiQualityChange = { wifiQuality = it; settings.wifiQuality = it },
-            onDismiss = { showSettingsSheet = false },
-        )
-    }
-}
-
-private fun startBridge(
-    context: android.content.Context,
-    mode: Mode,
-    host: String,
-    port: Int,
-    btAddress: String,
-    pcBitrateBps: Int,
-    micBitrateBps: Int,
-    bufferMs: Int,
-) {
-    val intent = Intent(context, AudioService::class.java).apply {
-        action = AudioService.ACTION_START
-        putExtra(AudioService.EXTRA_MODE, mode.name)
-        putExtra(AudioService.EXTRA_PORT, port)
-        putExtra(AudioService.EXTRA_PC_BITRATE, pcBitrateBps)
-        putExtra(AudioService.EXTRA_MIC_BITRATE, micBitrateBps)
-        putExtra(AudioService.EXTRA_BUFFER_MS, bufferMs)
-        if (mode == Mode.WIFI) putExtra(AudioService.EXTRA_HOST, host)
-        if (mode == Mode.BLUETOOTH) putExtra(AudioService.EXTRA_BT_ADDRESS, btAddress)
-    }
-    ContextCompat.startForegroundService(context, intent)
-}
-
-@Composable
-private fun UpdateBanner(info: UpdateInfo, downloading: Boolean, onDismiss: () -> Unit, onUpdate: () -> Unit) {
-    ElevatedCard(
-        shape = RoundedCornerShape(18.dp),
-        modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.elevatedCardColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
-    ) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Filled.SystemUpdate, contentDescription = null, tint = MaterialTheme.colorScheme.onPrimaryContainer)
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    "Доступна версия ${info.version}",
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
-            Spacer(Modifier.height(12.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = onUpdate, enabled = !downloading) {
-                    if (downloading) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                        Spacer(Modifier.width(8.dp))
-                        Text("Скачивается...")
-                    } else {
-                        Text("Обновить")
-                    }
-                }
-                TextButton(onClick = onDismiss, enabled = !downloading) { Text("Позже") }
-            }
-        }
-    }
-}
-
-@Composable
-private fun StatusCard(status: String, connected: Boolean) {
-    val dotColor = when {
-        connected -> StatusGreen
-        status.startsWith("Переподключение") || status.startsWith("Подключение") -> StatusAmber
-        status.startsWith("Нет разрешений") || status.startsWith("Ошибка") -> StatusRed
-        else -> MaterialTheme.colorScheme.outline
-    }
-    ElevatedCard(shape = RoundedCornerShape(18.dp), modifier = Modifier.fillMaxWidth()) {
-        Row(
-            modifier = Modifier.padding(18.dp).fillMaxWidth(),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box(
-                modifier = Modifier
-                    .size(12.dp)
-                    .clip(CircleShape)
-                    .background(dotColor),
-            )
-            Spacer(Modifier.width(12.dp))
-            Text(status, style = MaterialTheme.typography.titleMedium)
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun ModeSelector(mode: Mode, enabled: Boolean, onSelect: (Mode) -> Unit) {
-    val options = listOf(
-        Triple(Mode.WIFI, "Wi-Fi", Icons.Filled.Wifi),
-        Triple(Mode.USB, "USB", Icons.Filled.Cable),
-        Triple(Mode.BLE, "BT LE", Icons.Filled.Bluetooth),
-        Triple(Mode.BLUETOOTH, "BT", Icons.Filled.Bluetooth),
-    )
-    SingleChoiceSegmentedButtonRow(modifier = Modifier.fillMaxWidth()) {
-        options.forEachIndexed { index, (value, label, icon) ->
-            SegmentedButton(
-                selected = mode == value,
-                onClick = { if (enabled) onSelect(value) },
-                shape = SegmentedButtonDefaults.itemShape(index = index, count = options.size),
-                enabled = enabled,
-                icon = { Icon(icon, contentDescription = null, modifier = Modifier.size(18.dp)) },
-            ) {
-                Text(label)
-            }
-        }
-    }
-}
-
-@Composable
-private fun WifiSection(
-    host: String, onHostChange: (String) -> Unit,
-    port: String, onPortChange: (String) -> Unit,
-    discovered: List<DiscoveredServer>, discovering: Boolean,
-    enabled: Boolean,
-    onRefresh: () -> Unit,
-    onPick: (DiscoveredServer) -> Unit,
-) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Text("Серверы в сети", style = MaterialTheme.typography.titleMedium)
-            TextButton(onClick = onRefresh, enabled = enabled && !discovering) {
-                if (discovering) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(Icons.Filled.Search, contentDescription = null, modifier = Modifier.size(18.dp))
-                }
-                Spacer(Modifier.width(6.dp))
-                Text(if (discovering) "Поиск..." else "Найти")
-            }
-        }
-
-        if (discovered.isEmpty() && !discovering) {
-            Text(
-                "Ничего не найдено — убедись, что сервер запущен на ПК и телефон в той же Wi-Fi сети, или впиши IP вручную ниже.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-        }
-
-        discovered.forEach { server ->
-            val isSelected = server.host == host
-            OutlinedCard(
-                onClick = { if (enabled) onPick(server) },
-                shape = RoundedCornerShape(14.dp),
-                modifier = Modifier.fillMaxWidth(),
-                colors = if (isSelected) CardDefaults.outlinedCardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant) else CardDefaults.outlinedCardColors(),
-            ) {
-                Column(Modifier.padding(14.dp)) {
-                    Text(server.name, style = MaterialTheme.typography.titleMedium)
-                    Text("${server.host}:${server.port}", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
-            }
-        }
-
-        OutlinedTextField(
-            value = host, onValueChange = onHostChange,
-            label = { Text("IP адрес ПК (вручную)") },
-            placeholder = { Text("192.168.137.1") },
-            enabled = enabled,
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth(),
-        )
-        PortField(port, onPortChange, enabled)
-    }
-}
-
-@Composable
-private fun UsbSection() {
-    val context = LocalContext.current
-    // Poll while this section is on screen, so the user can see at a glance whether the PC has put
-    // the phone into accessory mode before pressing Connect.
-    var attached by remember { mutableStateOf(false) }
+    // The service may already be running (the app was closed and reopened): take its status.
     LaunchedEffect(Unit) {
-        while (true) {
-            attached = com.audiobridge.transport.UsbTransport.isAccessoryAttached(context)
-            kotlinx.coroutines.delay(1000)
+        if (AudioService.active && state.status == "Отключено") state.status = AudioService.lastStatus
+        state.checkUpdate()
+        if (state.mode == Mode.WIFI) state.runDiscovery()
+    }
+
+    // Auto-connect on launch (once) with the last mode, if the user switched it on.
+    LaunchedEffect(Unit) {
+        if (state.autoConnect && state.link == Link.OFF && !AudioService.active) state.connect()
+    }
+
+    // USB attach / Quick Settings tile: switch mode if needed and connect (only if idle).
+    LaunchedEffect(connectRequests) {
+        if (connectRequests > 0) {
+            state.mode = runCatching { Mode.valueOf(settings.mode) }.getOrDefault(state.mode)
+            if (state.link == Link.OFF) state.connect()
         }
     }
 
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            "Кабелем напрямую — без модема, отладки и adb. Запусти сервер на ПК и подключи кабель: " +
-                "сервер сам переключит телефон в режим USB-аксессуара, а приложение откроется и подключится.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-            Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier.size(10.dp).clip(CircleShape).background(if (attached) StatusGreen else StatusAmber),
-                )
-                Spacer(Modifier.width(10.dp))
-                Text(
-                    if (attached) "ПК подключён по кабелю (режим аксессуара)"
-                    else "ПК пока не переключил телефон в режим аксессуара",
-                    style = MaterialTheme.typography.titleMedium,
-                )
+    AnimatedContent(
+        targetState = screen,
+        transitionSpec = {
+            if (targetState == Screen.SETTINGS) {
+                (slideInHorizontally { it / 4 } + fadeIn()) togetherWith (fadeOut())
+            } else {
+                fadeIn() togetherWith (slideOutHorizontally { it / 4 } + fadeOut())
             }
-        }
-        if (!attached) {
-            Text(
-                "На ПК: драйвер UsbDk установлен (один раз), в сервере включена галочка «USB-кабель», " +
-                    "телефон разблокирован.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        },
+        label = "screen",
+    ) { s ->
+        when (s) {
+            Screen.HOME -> HomeScreen(state, onOpenSettings = { screen = Screen.SETTINGS })
+            Screen.SETTINGS -> SettingsScreen(state, onBack = { screen = Screen.HOME })
         }
     }
-}
 
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BluetoothSection(
-    devices: List<BluetoothDevice>,
-    selectedAddress: String,
-    onSelect: (String) -> Unit,
-    onRefresh: () -> Unit,
-    enabled: Boolean,
-) {
-    var expanded by remember { mutableStateOf(false) }
-    @Suppress("MissingPermission")
-    val selectedName = devices.firstOrNull { it.address == selectedAddress }?.let { "${it.name} (${it.address})" } ?: "Выбери устройство"
-
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween, modifier = Modifier.fillMaxWidth()) {
-            Text("Сопряжённое устройство (ПК)", style = MaterialTheme.typography.titleMedium)
-            IconButton(onClick = onRefresh, enabled = enabled) {
-                Icon(Icons.Filled.Refresh, contentDescription = "Обновить список")
-            }
-        }
-        ExposedDropdownMenuBox(expanded = expanded, onExpandedChange = { if (enabled) expanded = it }) {
-            OutlinedTextField(
-                value = selectedName,
-                onValueChange = {},
-                readOnly = true,
-                enabled = enabled,
-                modifier = Modifier.fillMaxWidth().menuAnchor(),
-                trailingIcon = { ExposedDropdownMenuDefaults.TrailingIcon(expanded = expanded) },
-            )
-            ExposedDropdownMenu(expanded = expanded, onDismissRequest = { expanded = false }) {
-                if (devices.isEmpty()) {
-                    DropdownMenuItem(text = { Text("Нет сопряжённых устройств") }, onClick = {}, enabled = false)
-                }
-                @Suppress("MissingPermission")
-                devices.forEach { device ->
-                    DropdownMenuItem(
-                        text = { Text("${device.name} (${device.address})") },
-                        onClick = { onSelect(device.address); expanded = false },
-                    )
-                }
-            }
-        }
-        Text(
-            "Сначала спарь ПК и телефон через настройки Bluetooth — это не A2DP-колонка, а отдельный канал приложения.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
-}
-
-@Composable
-private fun PortField(port: String, onPortChange: (String) -> Unit, enabled: Boolean) {
-    OutlinedTextField(
-        value = port, onValueChange = { if (it.length <= 5 && it.all(Char::isDigit)) onPortChange(it) },
-        label = { Text("Порт") },
-        enabled = enabled,
-        singleLine = true,
-        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-        modifier = Modifier.fillMaxWidth(0.5f),
-    )
-}
-
-@Composable
-private fun LogCard(lines: List<String>) {
-    ElevatedCard(shape = RoundedCornerShape(14.dp), modifier = Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(14.dp).heightIn(max = 160.dp).verticalScroll(rememberScrollState())) {
-            if (lines.isEmpty()) {
-                Text("Лог пуст", style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-            }
-            lines.forEach {
-                Text(it, style = MaterialTheme.typography.bodyMedium.copy(fontFamily = FontFamily.Monospace))
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun BitrateSettingsSheet(
-    pcBitrate: Float, onPcBitrateChange: (Float) -> Unit,
-    micBitrate: Float, onMicBitrateChange: (Float) -> Unit,
-    bufferMs: Float, onBufferMsChange: (Float) -> Unit,
-    maxRate: Int, onMaxRateChange: (Int) -> Unit,
-    wifiQuality: Int, onWifiQualityChange: (Int) -> Unit,
-    onDismiss: () -> Unit,
-) {
-    ModalBottomSheet(onDismissRequest = onDismiss) {
-        Column(Modifier.padding(horizontal = 20.dp).padding(bottom = 32.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-            Text("Буфер воспроизведения: ${bufferMs.toInt()} мс", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Запас против рывков сети. Больше — устойчивее звук, но больше задержка; меньше — наоборот. " +
-                    "Если звук рвётся (особенно по Bluetooth), увеличь. При недогрузке приложение само добавляет запас. " +
-                    "Применяется при следующем подключении.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Slider(
-                value = bufferMs,
-                onValueChange = onBufferMsChange,
-                valueRange = PlayoutBuffer.MIN_TARGET_MS.toFloat()..400f,
-                steps = 36,
-            )
-
-            Spacer(Modifier.height(20.dp))
-
-            Text("Частота потока без сжатия (Wi-Fi/USB)", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Максимум, который ПК может присылать. 48 кГц — то, во что Android всё равно сводит звук; выше — " +
-                    "только если устройство вывода их реально играет (если нет — приложение само вернётся на 48). " +
-                    "Применяется при следующем подключении.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                listOf(48_000 to "48 кГц", 96_000 to "96 кГц", 192_000 to "192 кГц").forEach { (rate, label) ->
-                    FilterChip(selected = maxRate == rate, onClick = { onMaxRateChange(rate) }, label = { Text(label) })
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            Text("Качество по Wi-Fi", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Авто: звук идёт без сжатия, а если Wi-Fi не успевает (рвётся, особенно на 2,4 ГГц или через роутер), " +
-                    "сервер сам переключается на сжатие Opus — нагрузка на сеть в ~15 раз меньше. " +
-                    "«Без сжатия» никогда не сжимает, «Сжатый» сжимает сразу. Применяется при следующем подключении.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(top = 6.dp)) {
-                listOf(0 to "Авто", 1 to "Без сжатия", 2 to "Сжатый").forEach { (value, label) ->
-                    FilterChip(selected = wifiQuality == value, onClick = { onWifiQualityChange(value) }, label = { Text(label) })
-                }
-            }
-
-            Spacer(Modifier.height(20.dp))
-
-            Text("Качество звука (Bluetooth)", style = MaterialTheme.typography.titleLarge)
-            Text(
-                "Действует для Bluetooth и сжатого Wi-Fi; USB всегда идёт без сжатия.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
-            Spacer(Modifier.height(12.dp))
-
-            Text("Звук ПК → телефон: ${pcBitrate.toInt()} kbps", style = MaterialTheme.typography.titleMedium)
-            Slider(value = pcBitrate, onValueChange = onPcBitrateChange, valueRange = 64f..320f, steps = 15)
-
-            Spacer(Modifier.height(12.dp))
-
-            Text("Микрофон → ПК: ${micBitrate.toInt()} kbps", style = MaterialTheme.typography.titleMedium)
-            Slider(value = micBitrate, onValueChange = onMicBitrateChange, valueRange = 12f..64f, steps = 12)
-        }
-    }
-}
-
-@Composable
-private fun BleSection() {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(
-            "Рекомендуемый Bluetooth-режим: стабильнее классического и с малой задержкой. Сопряжение не нужно — " +
-                "нажми «Подключиться», телефон начнёт ждать ПК, а запущенный на ПК сервер подключится к нему сам " +
-                "(на ПК должен быть включён Bluetooth, в сервере нажат «Старт»).",
-            style = MaterialTheme.typography.bodyMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-    }
+    // Theme chosen in settings: tell the activity (it owns the composition-wide theme).
+    LaunchedEffect(state.themeId) { onThemeChanged(state.themeId) }
 }

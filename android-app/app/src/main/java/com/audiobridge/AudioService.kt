@@ -66,6 +66,12 @@ class AudioService : Service() {
         const val RECONNECT_DELAY_MS = 2000L
         const val PING_INTERVAL_MS = 3000L
         const val DEAD_CONNECTION_MS = 9000L
+
+        /** True while the bridge service is running (UI and the Quick Settings tile read it). */
+        @Volatile var active = false
+            private set
+
+        val lastStatus: String get() = StatusBus.lastStatus
     }
 
     // One flag per worker: starting a new connection (e.g. switching USB -> Bluetooth) retires the old
@@ -92,7 +98,11 @@ class AudioService : Service() {
 
         ServiceCompat.startForeground(
             this, NOTIFICATION_ID, buildNotification("Подключение..."),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            // The microphone type only when the microphone is switched on: without it the service needs no
+            // RECORD_AUDIO and shows no mic indicator, and may be started from the Quick Settings tile.
+            if (Settings(applicationContext).micEnabled)
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            else ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
         )
 
         // Already running with the same request: nothing to do. A different mode replaces the old worker.
@@ -111,6 +121,8 @@ class AudioService : Service() {
         }
 
         currentMode = mode
+        active = true
+        StatusBus.changed?.invoke()
         val alive = AtomicBoolean(true)
         running = alive
         workerThread = thread(name = "AudioBridge-worker") { runLoop(transport, pcBitrate, micBitrate, bufferMs, alive) }
@@ -119,6 +131,7 @@ class AudioService : Service() {
 
     private fun stopBridge() {
         running.set(false)
+        active = false
         workerThread?.interrupt()
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
@@ -127,6 +140,8 @@ class AudioService : Service() {
 
     override fun onDestroy() {
         running.set(false)
+        active = false
+        StatusBus.postStatus("Отключено")
         workerThread?.interrupt()
         releaseLocks()
         super.onDestroy()

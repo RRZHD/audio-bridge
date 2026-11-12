@@ -3,6 +3,6 @@
     <!-- Only used for the cold-start window background before Compose takes over — actual theming
          (colors, typography, dark mode) lives in ui/theme/Theme.kt. -->
     <style name="Theme.AudioBridge" parent="Theme.Material3.DayNight.NoActionBar">
-        <item name="android:windowBackground">@color/launcher_background</item>
+        <item name="android:windowBackground">@color/window_bg</item>
     </style>
 </resources>

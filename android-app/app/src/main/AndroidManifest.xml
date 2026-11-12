@@ -50,6 +50,18 @@
                 android:resource="@xml/accessory_filter" />
         </activity>
 
+        <!-- Quick Settings tile: switch the bridge on/off from the notification shade. -->
+        <service
+            android:name=".QuickTile"
+            android:exported="true"
+            android:icon="@drawable/ic_tile"
+            android:label="Audio Bridge"
+            android:permission="android.permission.BIND_QUICK_SETTINGS_TILE">
+            <intent-filter>
+                <action android:name="android.service.quicksettings.action.QS_TILE" />
+            </intent-filter>
+        </service>
+
         <service
             android:name=".AudioService"
             android:foregroundServiceType="microphone|mediaPlayback"

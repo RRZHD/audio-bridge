@@ -1,5 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="launcher_background">#1E1E2E</color>
-    <color name="accent">#7C5CFF</color>
+    <!-- Cold-start window background: the console's page colours (light #f2f3f5 / dark #17171b). -->
+    <color name="launcher_background">#17171B</color>
+    <color name="window_bg">#F2F3F5</color>
+    <color name="accent">#DC2F2F</color>
 </resources>

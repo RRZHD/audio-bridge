@@ -53,6 +53,22 @@ class Settings(context: Context) {
         get() = prefs.getBoolean("mic_enabled", false)
         set(value) = prefs.edit().putBoolean("mic_enabled", value).apply()
 
+
+    /** Оформление: "auto" (светлая/тёмная по системе) или id палитры (light, dark, ocean, forest, …). */
+    var themeId: String
+        get() = prefs.getString("theme", "auto") ?: "auto"
+        set(value) = prefs.edit().putString("theme", value).apply()
+
+    /** Профиль звука: 0 баланс, 1 минимальная задержка, 2 максимальная стабильность, 3 свой (ручная настройка). */
+    var profile: Int
+        get() = prefs.getInt("profile", 0)
+        set(value) = prefs.edit().putInt("profile", value).apply()
+
+    /** Подключаться само при открытии приложения (с последним режимом и ПК). */
+    var autoConnect: Boolean
+        get() = prefs.getBoolean("auto_connect", false)
+        set(value) = prefs.edit().putBoolean("auto_connect", value).apply()
+
     /** Playback jitter buffer (ms) — the latency-vs-robustness knob for choppy links. */
     var bufferMs: Int
         get() = prefs.getInt("buffer_ms", AudioService.DEFAULT_BUFFER_MS)

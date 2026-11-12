@@ -1,78 +1,108 @@
 package com.audiobridge.ui.theme
 
 import android.app.Activity
-import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Shapes
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.material3.dynamicDarkColorScheme
-import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.dp
 import androidx.core.view.WindowCompat
 
-val AccentPurple = Color(0xFF7C5CFF)
-val AccentPurpleDark = Color(0xFF6247D9)
-val AppBackgroundDark = Color(0xFF16161F)
-val AppSurfaceDark = Color(0xFF1E1E2E)
-val AppBackgroundLight = Color(0xFFF7F6FB)
-val AppSurfaceLight = Color(0xFFFFFFFF)
-val StatusGreen = Color(0xFF34C77B)
-val StatusAmber = Color(0xFFE0A93B)
-val StatusRed = Color(0xFFE0545C)
+/** Палитра текущей темы: из неё берут цвета компоненты, которых нет в Material (мягкие плашки, состояния). */
+val LocalPalette = staticCompositionLocalOf { Palettes.Light }
 
-private val DarkColors = darkColorScheme(
-    primary = AccentPurple,
-    onPrimary = Color.White,
-    secondary = AccentPurpleDark,
-    background = AppBackgroundDark,
-    surface = AppSurfaceDark,
-    surfaceVariant = Color(0xFF29293D),
-    onBackground = Color(0xFFEAEAF4),
-    onSurface = Color(0xFFEAEAF4),
-)
+// Состояния для мест, где палитры под рукой нет (старые ссылки).
+val StatusGreen = Color(0xFF2F9E5B)
+val StatusAmber = Color(0xFFD9930D)
+val StatusRed = Color(0xFFD64545)
 
-private val LightColors = lightColorScheme(
-    primary = AccentPurple,
+/** Скругления консоли: xs 4 (полоски), sm 8 (кнопки и поля), обычное 12 (карточки), lg 16 (листы и «герой»). */
+object Radius {
+    val xs = 4.dp
+    val sm = 8.dp
+    val md = 12.dp
+    val lg = 16.dp
+}
+
+/** Высоты кнопок и полей консоли: 32 / 36 / 44. */
+object Control {
+    val sm = 32.dp
+    val md = 36.dp
+    val lg = 44.dp
+}
+
+private fun Palette.toScheme() = (if (dark) darkColorScheme() else lightColorScheme()).copy(
+    primary = accent,
     onPrimary = Color.White,
-    secondary = AccentPurpleDark,
-    background = AppBackgroundLight,
-    surface = AppSurfaceLight,
-    surfaceVariant = Color(0xFFEDEAFB),
-    onBackground = Color(0xFF1B1B23),
-    onSurface = Color(0xFF1B1B23),
+    primaryContainer = accentSoft,
+    onPrimaryContainer = accent,
+    secondary = accent,
+    onSecondary = Color.White,
+    secondaryContainer = accentSoft,
+    onSecondaryContainer = accent,
+    tertiary = info,
+    background = bg,
+    onBackground = text,
+    surface = surface,
+    onSurface = text,
+    surfaceVariant = raise,
+    onSurfaceVariant = muted,
+    surfaceContainer = surface,
+    surfaceContainerLow = surface,
+    surfaceContainerHigh = surface,
+    surfaceContainerHighest = raise,
+    surfaceTint = Color.Transparent,
+    outline = border,
+    outlineVariant = border,
+    error = danger,
+    onError = Color.White,
+    errorContainer = soft(danger),
+    onErrorContainer = ink(danger),
+    inverseSurface = text,
+    inverseOnSurface = surface,
+    scrim = Color.Black,
 )
 
 @Composable
 fun AudioBridgeTheme(
-    darkTheme: Boolean = isSystemInDarkTheme(),
-    dynamicColor: Boolean = true,
+    themeId: String = Palettes.AUTO,
     content: @Composable () -> Unit,
 ) {
-    val context = LocalContext.current
-    val colorScheme = when {
-        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S ->
-            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
-        darkTheme -> DarkColors
-        else -> LightColors
-    }
+    val palette = Palettes.byId(themeId, isSystemInDarkTheme())
 
     val view = LocalView.current
     if (!view.isInEditMode) {
-        androidx.compose.runtime.SideEffect {
+        SideEffect {
             val window = (view.context as Activity).window
-            window.statusBarColor = colorScheme.background.toArgb()
-            WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = !darkTheme
+            window.statusBarColor = palette.bg.toArgb()
+            window.navigationBarColor = palette.bg.toArgb()
+            val controller = WindowCompat.getInsetsController(window, view)
+            controller.isAppearanceLightStatusBars = !palette.dark
+            controller.isAppearanceLightNavigationBars = !palette.dark
         }
     }
 
-    MaterialTheme(
-        colorScheme = colorScheme,
-        typography = Typography,
-        content = content,
-    )
+    CompositionLocalProvider(LocalPalette provides palette) {
+        MaterialTheme(
+            colorScheme = palette.toScheme(),
+            typography = Typography,
+            shapes = Shapes(
+                extraSmall = RoundedCornerShape(Radius.xs),
+                small = RoundedCornerShape(Radius.sm),
+                medium = RoundedCornerShape(Radius.md),
+                large = RoundedCornerShape(Radius.lg),
+                extraLarge = RoundedCornerShape(Radius.lg),
+            ),
+            content = content,
+        )
+    }
 }
