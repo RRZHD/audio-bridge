@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- Themed (monochrome) icon of Android 13+: the same bars in one colour. -->
+    <path android:pathData="M39.2,47 V61" android:strokeColor="#000000" android:strokeWidth="5.4" android:strokeLineCap="round" />
+    <path android:pathData="M48.4,36 V72" android:strokeColor="#000000" android:strokeWidth="5.4" android:strokeLineCap="round" />
+    <path android:pathData="M57.6,41 V67" android:strokeColor="#000000" android:strokeWidth="5.4" android:strokeLineCap="round" />
+    <path android:pathData="M66.8,49 V59" android:strokeColor="#000000" android:strokeWidth="5.4" android:strokeLineCap="round" />
+</vector>

@@ -72,6 +72,7 @@ public sealed class MainForm : Form
     public MainForm(bool autoStart = false)
     {
         Text = "Audio Bridge Server";
+        try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { /* the default icon is fine */ }
         StartPosition = FormStartPosition.CenterScreen;
         ClientSize = new Size(1080, 740);
         MinimumSize = new Size(940, 640);

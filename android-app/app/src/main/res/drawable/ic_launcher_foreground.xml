@@ -4,13 +4,25 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+    <!-- Four equaliser bars (the app's logo mark), inside the 66 dp adaptive safe zone. -->
     <path
-        android:fillColor="@color/accent"
-        android:pathData="M54,24 C44,24 36,32 36,42 L36,66 C36,76 44,84 54,84 C64,84 72,76 72,66 L72,42 C72,32 64,24 54,24 Z" />
-    <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M28,50 L28,58 M80,50 L80,58"
+        android:pathData="M39.2,47 V61"
         android:strokeColor="#FFFFFF"
-        android:strokeWidth="6"
+        android:strokeWidth="5.4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M48.4,36 V72"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5.4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M57.6,41 V67"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5.4"
+        android:strokeLineCap="round" />
+    <path
+        android:pathData="M66.8,49 V59"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5.4"
         android:strokeLineCap="round" />
 </vector>
