@@ -17,11 +17,25 @@ if (-not (Test-Path $usbdkMsi) -or (Get-FileHash $usbdkMsi -Algorithm SHA256).Ha
     if ((Get-FileHash $usbdkMsi -Algorithm SHA256).Hash.ToLower() -ne $usbdkSha256) { throw "UsbDk MSI checksum mismatch" }
 }
 
+
+# Code signing (optional): installer\signing\codesign.pfx + codesign.pass (both gitignored; issued by the internal CA).
+$signPfx = Join-Path $PSScriptRoot "signing\codesign.pfx"
+$signPass = Join-Path $PSScriptRoot "signing\codesign.pass"
+function Sign-File([string]$path) {
+    if (-not (Test-Path $signPfx)) { Write-Host "(no signing certificate: $path left unsigned)" -ForegroundColor Yellow; return }
+    $signtool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin\*\x64\signtool.exe" -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
+    if (-not $signtool) { throw "signtool.exe not found (Windows SDK)" }
+    $pass = (Get-Content $signPass -Raw).Trim()
+    & $signtool.FullName sign /fd SHA256 /f $signPfx /p $pass /tr http://timestamp.digicert.com /td SHA256 $path
+    if ($LASTEXITCODE -ne 0) { throw "signtool failed for $path" }
+}
+
 Write-Host "==> Publishing self-contained server exe..." -ForegroundColor Cyan
 dotnet publish $serverProject -c Release -r win-x64 --self-contained true `
     -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
     -o $publishDir
 if ($LASTEXITCODE -ne 0) { throw "dotnet publish failed" }
+Sign-File (Join-Path $publishDir "AudioBridgeServer.exe")
 
 $iscc = Get-Command "ISCC.exe" -ErrorAction SilentlyContinue
 if (-not $iscc) {
@@ -36,5 +50,6 @@ if (-not $iscc) {
 Write-Host "==> Compiling installer..." -ForegroundColor Cyan
 & $iscc "$PSScriptRoot\setup.iss"
 if ($LASTEXITCODE -ne 0) { throw "ISCC compile failed" }
+Sign-File (Join-Path $PSScriptRoot "output\AudioBridgeServer-Setup.exe")
 
 Write-Host "==> Done: installer\output\AudioBridgeServer-Setup.exe" -ForegroundColor Green
