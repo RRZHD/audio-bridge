@@ -1,10 +1,13 @@
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Drawing;
+using System.Drawing.Drawing2D;
 using System.IO;
 using System.Linq;
 using System.Windows.Forms;
 using AudioBridge.Server.Core;
+using AudioBridge.Server.Ui;
 using NAudio.CoreAudioApi;
 
 namespace AudioBridge.Server;
@@ -46,28 +49,39 @@ public sealed class MainForm : Form
 
     private const string MicOutputDefault = "default";
 
-    private ComboBox _captureDeviceCombo = null!;
-    private ComboBox _micOutputDeviceCombo = null!;
-    private Label _deviceHint = null!;
-    private Label _firewallWarning = null!;
-    private Button _firewallButton = null!;
-    private CheckBox _usbCheck = null!;
-    private Label _usbStatus = null!;
-    private Button _usbDkButton = null!;
-    private NumericUpDown _portInput = null!;
-    private Button _startStopButton = null!;
-    private ListBox _sessionsList = null!;
+    // ---- элементы ----------------------------------------------------------------------------
+    private SelectBox _captureDeviceCombo = null!;
+    private SelectBox _micOutputDeviceCombo = null!;
+    private ThemedLabel _deviceHint = null!;
+    private ThemedLabel _micHint = null!;
+    private Card _firewallCard = null!;
+    private ThemedLabel _firewallWarning = null!;
+    private ToggleSwitch _usbCheck = null!;
+    private ThemedLabel _usbStatus = null!;
+    private ActionButton _usbDkButton = null!;
+    private NumberBox _portInput = null!;
+    private PowerButton _power = null!;
+    private ThemedLabel _heroTitle = null!;
+    private ThemedLabel _heroSub = null!;
+    private Chip _chipTcp = null!, _chipBle = null!, _chipBt = null!, _chipUsb = null!;
+    private ClientList _clients = null!;
     private TextBox _logBox = null!;
+    private readonly List<Pill> _themePills = new();
     private bool _running;
 
     public MainForm(bool autoStart = false)
     {
         Text = "Audio Bridge Server";
-        Width = 760;
-        Height = 620;
         StartPosition = FormStartPosition.CenterScreen;
+        ClientSize = new Size(1080, 740);
+        MinimumSize = new Size(940, 640);
+        Font = Skin.Font(9.5f);
+
+        Skin.Apply(_settings.Theme);
         BuildUi();
         PopulateDevices();
+        ApplyTheme();
+        Skin.Changed += ApplyTheme;
 
         _engine.Log += AppendLog;
         _tcp.Log += AppendLog;
@@ -88,69 +102,234 @@ public sealed class MainForm : Form
         FormClosing += (_, _) => StopAll();
         Shown += (_, _) => UpdateFirewallWarning();
         if (autoStart) Shown += (_, _) => StartAll(); // `AudioBridgeServer.exe --autostart`
+        UpdateHero();
     }
+
+    // ================================================================================== интерфейс
 
     private void BuildUi()
     {
-        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, Padding = new Padding(10) };
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 30));
-        root.RowStyles.Add(new RowStyle(SizeType.Percent, 70));
+        SuspendLayout();
+
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 2, Margin = Padding.Empty, Padding = Padding.Empty };
+        root.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        root.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
-        // Devices row
-        var devicesPanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
-        devicesPanel.Controls.Add(new Label { Text = "Захват звука с устройства:", AutoSize = true, Margin = new Padding(0, 8, 5, 0) });
-        _captureDeviceCombo = new ComboBox { Width = 280, DropDownStyle = ComboBoxStyle.DropDownList };
-        devicesPanel.Controls.Add(_captureDeviceCombo);
-        devicesPanel.Controls.Add(new Label { Text = "Выход для микрофона телефона:", AutoSize = true, Margin = new Padding(15, 8, 5, 0) });
-        _micOutputDeviceCombo = new ComboBox { Width = 280, DropDownStyle = ComboBoxStyle.DropDownList };
-        devicesPanel.Controls.Add(_micOutputDeviceCombo);
-        devicesPanel.SetFlowBreak(_micOutputDeviceCombo, true);
+        root.Controls.Add(BuildHeader(), 0, 0);
 
-        _deviceHint = new Label { AutoSize = true, MaximumSize = new System.Drawing.Size(700, 0), Margin = new Padding(0, 8, 0, 0) };
-        devicesPanel.Controls.Add(_deviceHint);
-        var soundSettings = new Button { Text = "Звук Windows…", AutoSize = true, Margin = new Padding(0, 6, 0, 0) };
-        soundSettings.Click += (_, _) => OpenWindowsSoundSettings();
-        devicesPanel.Controls.Add(soundSettings);
-        root.Controls.Add(devicesPanel, 0, 0);
-
-        // Port row
-        var connPanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top, WrapContents = true };
-        connPanel.Controls.Add(new Label { Text = "TCP порт (Wi-Fi, LAN):", AutoSize = true, Margin = new Padding(0, 8, 5, 0) });
-        _portInput = new NumericUpDown { Minimum = 1024, Maximum = 65535, Value = DefaultPort, Width = 80 };
-        connPanel.Controls.Add(_portInput);
-        connPanel.SetFlowBreak(_portInput, true);
-
-        _firewallWarning = new Label
+        var body = new TableLayoutPanel
         {
-            AutoSize = true,
-            MaximumSize = new System.Drawing.Size(700, 0),
-            ForeColor = System.Drawing.Color.Firebrick,
-            Margin = new Padding(0, 8, 0, 0),
-            Text = "Брандмауэр Windows блокирует входящие подключения в «общедоступных» сетях — так Windows часто помечает " +
-                   "сеть раздачи Wi-Fi, поэтому телефон не сможет найти или открыть сервер (на USB-кабель это не влияет).",
-            Visible = false,
+            Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty,
+            Padding = new Padding(20, 0, 20, 20),
         };
-        connPanel.Controls.Add(_firewallWarning);
-        _firewallButton = new Button { Text = "Разрешить в брандмауэре (нужны права администратора)", AutoSize = true, Visible = false, Margin = new Padding(0, 4, 0, 0) };
-        _firewallButton.Click += (_, _) =>
-        {
-            if (FirewallHelper.AllowThroughFirewallElevated()) AppendLog("Брандмауэр: правило для сервера создано.");
-            else AppendLog("Брандмауэр: правило не создано (отказ в UAC или ошибка).");
-            UpdateFirewallWarning();
-        };
-        connPanel.Controls.Add(_firewallButton);
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        root.Controls.Add(body, 0, 1);
 
-        _usbCheck = new CheckBox
+        body.Controls.Add(BuildLeft(), 0, 0);
+        body.Controls.Add(BuildRight(), 1, 0);
+
+        ResumeLayout(true);
+    }
+
+    private Control BuildHeader()
+    {
+        var header = new Panel { Dock = DockStyle.Fill, Padding = new Padding(20, 14, 20, 0) };
+
+        var logo = new LogoMark { Location = new Point(20, 18), Size = new Size(40, 40) };
+        header.Controls.Add(logo);
+
+        var title = new ThemedLabel("Audio Bridge Server", LabelRole.Heading) { Location = new Point(72, 16) };
+        var sub = new ThemedLabel("Звук с ПК на телефон — Wi-Fi, USB, Bluetooth", LabelRole.Muted) { Location = new Point(73, 40) };
+        header.Controls.Add(title);
+        header.Controls.Add(sub);
+
+        // Тема: как в системе / светлая / тёмная — справа.
+        var themes = new FlowLayoutPanel
         {
-            Text = "USB-кабель: подключать телефон напрямую (без модема и adb)",
-            AutoSize = true,
-            Checked = _settings.UsbEnabled,
-            Margin = new Padding(0, 8, 0, 0),
+            AutoSize = true, FlowDirection = FlowDirection.LeftToRight, WrapContents = false,
+            Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = Color.Transparent, Margin = Padding.Empty,
         };
+        foreach (var (mode, label) in new[] { (ThemeMode.Auto, "Как в системе"), (ThemeMode.Light, "Светлая"), (ThemeMode.Dark, "Тёмная") })
+        {
+            var pill = new Pill(label) { Tag = mode, Margin = new Padding(0, 0, 6, 0) };
+            pill.Click += (_, _) => { _settings.Theme = mode; _settings.Save(); Skin.Apply(mode); };
+            _themePills.Add(pill);
+            themes.Controls.Add(pill);
+        }
+        header.Controls.Add(themes);
+        header.Resize += (_, _) => themes.Location = new Point(header.Width - themes.Width - 20, 20);
+        themes.SizeChanged += (_, _) => themes.Location = new Point(header.Width - themes.Width - 20, 20);
+        return header;
+    }
+
+    private Control BuildLeft()
+    {
+        var column = ScrollColumn();
+        column.Controls.Add(Wrap(BuildHeroCard()));
+        column.Controls.Add(Wrap(BuildClientsCard()));
+        return column.Parent ?? column;
+    }
+
+    private Control BuildRight()
+    {
+        var column = ScrollColumn();
+        column.Margin = new Padding(0);
+        column.Controls.Add(Wrap(BuildSoundCard()));
+        column.Controls.Add(Wrap(BuildConnectCard()));
+        column.Controls.Add(Wrap(BuildLogCard()));
+        return column.Parent ?? column;
+    }
+
+    /// <summary>Вертикальная колонка карточек с прокруткой; возвращает панель-колонку (родитель — прокручиваемая область).</summary>
+    private static FlowLayoutPanel ScrollColumn()
+    {
+        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0, 0, 0, 0), Margin = new Padding(0, 0, 16, 0) };
+        var flow = new FlowLayoutPanel
+        {
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true,
+            Dock = DockStyle.Top, Margin = Padding.Empty,
+        };
+        scroll.Controls.Add(flow);
+        // Каждая карточка во всю ширину прокручиваемой области.
+        scroll.Resize += (_, _) =>
+        {
+            var w = scroll.ClientSize.Width - (scroll.VerticalScroll.Visible ? 0 : 0);
+            flow.Width = w;
+            foreach (Control c in flow.Controls) c.Width = Math.Max(120, w - c.Margin.Horizontal);
+        };
+        flow.ControlAdded += (_, e) =>
+        {
+            e.Control!.Width = Math.Max(120, scroll.ClientSize.Width - e.Control.Margin.Horizontal);
+        };
+        return flow;
+    }
+
+    private static Control Wrap(Card card)
+    {
+        card.Margin = new Padding(0, 0, 0, 14);
+        return card;
+    }
+
+    /// <summary>Карточка с вертикальным содержимым: контролы укладываются сверху вниз, ширина по карточке.</summary>
+    private static Card MakeCard(Padding? padding = null)
+    {
+        var card = new Card { Padding = padding ?? new Padding(18) };
+        return card;
+    }
+
+    private static VStack Stack() => new();
+
+    private static void Add(VStack stack, Control c, int top = 0)
+    {
+        c.Margin = new Padding(0, top, 0, 0);
+        c.Dock = DockStyle.None;
+        if (c.Anchor != AnchorStyles.None && (c.Anchor & AnchorStyles.Right) == 0 && c is not ActionButton && c is not ToggleSwitch)
+            c.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
+        stack.Controls.Add(c);
+    }
+
+    private static ThemedLabel Wrapped(string text, LabelRole role)
+    {
+        var l = new ThemedLabel(text, role) { AutoSize = true };
+        return l;
+    }
+
+    private Card BuildHeroCard()
+    {
+        var card = MakeCard(new Padding(18, 26, 18, 22));
+        var stack = Stack();
+        card.Controls.Add(stack);
+
+        _power = new PowerButton { Anchor = AnchorStyles.None };
+        _power.Click += (_, _) => ToggleRunning();
+        _power.Margin = new Padding(0, 0, 0, 14);
+        stack.Controls.Add(_power);
+
+        _heroTitle = new ThemedLabel("Сервер остановлен", LabelRole.Title) { Anchor = AnchorStyles.None };
+        stack.Controls.Add(_heroTitle);
+
+        _heroSub = new ThemedLabel("", LabelRole.Muted) { Anchor = AnchorStyles.None, Wrap = false, MaximumSize = new Size(320, 0) };
+        _heroSub.Margin = new Padding(0, 4, 0, 14);
+        stack.Controls.Add(_heroSub);
+
+        var chips = new FlowLayoutPanel
+        {
+            AutoSize = true, WrapContents = true, FlowDirection = FlowDirection.LeftToRight,
+            Anchor = AnchorStyles.None, BackColor = Color.Transparent, MaximumSize = new Size(340, 0),
+        };
+        _chipTcp = new Chip("Wi-Fi", Tone.Neutral, dot: true) { Margin = new Padding(3) };
+        _chipBle = new Chip("BT LE", Tone.Neutral, dot: true) { Margin = new Padding(3) };
+        _chipBt = new Chip("BT", Tone.Neutral, dot: true) { Margin = new Padding(3) };
+        _chipUsb = new Chip("USB", Tone.Neutral, dot: true) { Margin = new Padding(3) };
+        chips.Controls.AddRange(new Control[] { _chipTcp, _chipBle, _chipBt, _chipUsb });
+        stack.Controls.Add(chips);
+        return card;
+    }
+
+    private Card BuildClientsCard()
+    {
+        var card = MakeCard();
+        var stack = Stack();
+        card.Controls.Add(stack);
+        Add(stack, new ThemedLabel("Подключённые телефоны", LabelRole.Heading));
+        _clients = new ClientList { Dock = DockStyle.Fill };
+        Add(stack, _clients, 12);
+        return card;
+    }
+
+    private Card BuildSoundCard()
+    {
+        var card = MakeCard();
+        var stack = Stack();
+        card.Controls.Add(stack);
+
+        Add(stack, new ThemedLabel("Звук ПК → телефон", LabelRole.Heading));
+        Add(stack, new ThemedLabel("Устройство вывода Windows, с которого сервер берёт звук", LabelRole.Muted) { Wrap = true }, 2);
+        _captureDeviceCombo = new SelectBox();
+        Add(stack, _captureDeviceCombo, 10);
+        _deviceHint = new ThemedLabel("", LabelRole.Muted) { Wrap = true };
+        Add(stack, _deviceHint, 8);
+        var sound = new ActionButton("Звук Windows…", BtnKind.Ghost, 32) { Anchor = AnchorStyles.Left };
+        sound.Click += (_, _) => OpenWindowsSoundSettings();
+        Add(stack, sound, 10);
+        sound.Dock = DockStyle.None; sound.Anchor = AnchorStyles.Left;
+
+        Add(stack, new Divider(), 16);
+        Add(stack, new ThemedLabel("Микрофон телефона → ПК", LabelRole.Heading), 16);
+        Add(stack, new ThemedLabel("Куда воспроизводить микрофон телефона (по умолчанию — никуда)", LabelRole.Muted) { Wrap = true }, 2);
+        _micOutputDeviceCombo = new SelectBox();
+        Add(stack, _micOutputDeviceCombo, 10);
+        _micHint = new ThemedLabel("", LabelRole.Muted) { Wrap = true };
+        Add(stack, _micHint, 8);
+        return card;
+    }
+
+    private Card BuildConnectCard()
+    {
+        var card = MakeCard();
+        var stack = Stack();
+        card.Controls.Add(stack);
+
+        Add(stack, new ThemedLabel("Подключения", LabelRole.Heading));
+
+        // Порт: подпись и пояснение слева, поле справа.
+        var portText = Stack();
+        Add(portText, new ThemedLabel("TCP-порт", LabelRole.Text));
+        Add(portText, new ThemedLabel("Для Wi-Fi и локальной сети; телефон находит его сам", LabelRole.Muted) { Wrap = true }, 2);
+        _portInput = new NumberBox { Value = DefaultPort };
+        Add(stack, new SplitRow(portText, _portInput), 12);
+
+        Add(stack, new Divider(), 14);
+
+        // USB: подпись и статус слева, переключатель справа.
+        var usbText = Stack();
+        Add(usbText, new ThemedLabel("USB-кабель", LabelRole.Text));
+        _usbStatus = new ThemedLabel("Подключать телефон напрямую, без модема и adb", LabelRole.Muted) { Wrap = true };
+        Add(usbText, _usbStatus, 2);
+        _usbCheck = new ToggleSwitch { Checked = _settings.UsbEnabled };
         _usbCheck.CheckedChanged += (_, _) =>
         {
             _settings.UsbEnabled = _usbCheck.Checked;
@@ -160,41 +339,153 @@ public sealed class MainForm : Form
                 if (_usbCheck.Checked) _aoa.Start();
                 else _aoa.Stop();
             }
-            if (!_usbCheck.Checked) _usbStatus.Text = "";
+            if (!_usbCheck.Checked) _usbStatus.Text = "Подключать телефон напрямую, без модема и adb";
+            UpdateHero();
         };
-        connPanel.Controls.Add(_usbCheck);
-        _usbStatus = new Label { AutoSize = true, MaximumSize = new System.Drawing.Size(700, 0), Margin = new Padding(12, 9, 0, 0) };
-        connPanel.Controls.Add(_usbStatus);
-        _usbDkButton = new Button { Text = "Настроить USB: драйвер UsbDk (один раз, права администратора)", AutoSize = true, Margin = new Padding(0, 4, 0, 0) };
+        var usbRow = new SplitRow(usbText, _usbCheck);
+        Add(stack, usbRow, 14);
+
+        _usbDkButton = new ActionButton("Настроить USB: драйвер UsbDk (один раз, нужны права администратора)", BtnKind.Ghost, 32) { Anchor = AnchorStyles.Left };
+        _usbDkButton.FitText();
         _usbDkButton.Click += (_, _) => SetupUsb();
-        connPanel.Controls.Add(_usbDkButton);
         _usbDkButton.Visible = !AoaHost.IsUsbDkInstalled() || !AoaHost.AccessoryHideRulesInstalled();
-        root.Controls.Add(connPanel, 0, 1);
+        Add(stack, _usbDkButton, 10);
+        _usbDkButton.Dock = DockStyle.None; _usbDkButton.Anchor = AnchorStyles.Left;
 
-        // Start/stop row
-        var actionPanel = new FlowLayoutPanel { AutoSize = true, Dock = DockStyle.Top };
-        _startStopButton = new Button { Text = "Старт", Width = 120, Height = 30 };
-        _startStopButton.Click += (_, _) => ToggleRunning();
-        actionPanel.Controls.Add(_startStopButton);
-        root.Controls.Add(actionPanel, 0, 2);
-
-        // Sessions
-        var sessionsGroup = new GroupBox { Text = "Подключённые клиенты", Dock = DockStyle.Fill };
-        _sessionsList = new ListBox { Dock = DockStyle.Fill };
-        sessionsGroup.Controls.Add(_sessionsList);
-        root.Controls.Add(sessionsGroup, 0, 3);
-
-        // Log
-        var logGroup = new GroupBox { Text = "Лог", Dock = DockStyle.Fill };
-        _logBox = new TextBox { Dock = DockStyle.Fill, Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical };
-        logGroup.Controls.Add(_logBox);
-        root.Controls.Add(logGroup, 0, 4);
+        // Брандмауэр.
+        _firewallCard = new Card { Tone = CardTone.Danger, Padding = new Padding(14), Visible = false };
+        var fw = Stack();
+        _firewallCard.Controls.Add(fw);
+        _firewallWarning = new ThemedLabel(
+            "Брандмауэр Windows блокирует входящие подключения в «общедоступных» сетях — так Windows часто помечает " +
+            "сеть раздачи Wi-Fi, поэтому телефон не сможет найти или открыть сервер (на USB-кабель это не влияет).", LabelRole.Danger)
+        { Wrap = true };
+        Add(fw, _firewallWarning);
+        var fwButton = new ActionButton("Разрешить в брандмауэре (нужны права администратора)", BtnKind.Primary, 32) { Anchor = AnchorStyles.Left };
+        fwButton.FitText();
+        fwButton.Click += (_, _) =>
+        {
+            if (FirewallHelper.AllowThroughFirewallElevated()) AppendLog("Брандмауэр: правило для сервера создано.");
+            else AppendLog("Брандмауэр: правило не создано (отказ в UAC или ошибка).");
+            UpdateFirewallWarning();
+        };
+        Add(fw, fwButton, 10);
+        fwButton.Dock = DockStyle.None; fwButton.Anchor = AnchorStyles.Left;
+        Add(stack, _firewallCard, 14);
+        return card;
     }
 
+    private Card BuildLogCard()
+    {
+        var card = MakeCard();
+        var stack = Stack();
+        card.Controls.Add(stack);
+
+        var head = new TableLayoutPanel { ColumnCount = 2, AutoSize = true, BackColor = Color.Transparent, Margin = Padding.Empty };
+        head.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        head.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        head.Controls.Add(new ThemedLabel("Лог", LabelRole.Heading), 0, 0);
+        var clear = new ActionButton("Очистить", BtnKind.Ghost, 28) { Anchor = AnchorStyles.Right };
+        clear.FitText();
+        clear.Click += (_, _) => _logBox.Clear();
+        head.Controls.Add(clear, 1, 0);
+        Add(stack, head);
+
+        _logBox = new TextBox
+        {
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+            Height = 230, Font = Skin.Mono(9f), WordWrap = true,
+        };
+        Add(stack, _logBox, 10);
+        _logBox.Dock = DockStyle.Fill;
+        _logBox.HandleCreated += (_, _) => Skin.StyleScroll(_logBox);
+        return card;
+    }
+
+    // ---- тема ----------------------------------------------------------------------------------
+
+    private void ApplyTheme()
+    {
+        var p = Skin.P;
+        BackColor = p.Bg;
+        ForeColor = p.Text;
+        if (_logBox != null)
+        {
+            _logBox.BackColor = p.Surface;
+            _logBox.ForeColor = p.Text;
+            if (_logBox.IsHandleCreated) Skin.StyleScroll(_logBox);
+        }
+        foreach (var pill in _themePills) pill.Selected = (ThemeMode)pill.Tag! == Skin.Mode;
+        if (IsHandleCreated) Skin.StyleWindow(this);
+        Invalidate(true);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Skin.StyleWindow(this);
+    }
+
+    // ---- «герой»: состояние сервера -------------------------------------------------------------
+
+    private void UpdateHero()
+    {
+        int count;
+        string phones;
+        lock (_sessionsLock)
+        {
+            count = _sessions.Count;
+            phones = string.Join(", ", _sessions.Select(s => string.IsNullOrWhiteSpace(s.PhoneName) ? s.Label : s.PhoneName));
+        }
+
+        if (!_running)
+        {
+            _power.State = PowerMode.Off;
+            _heroTitle.Text = "Сервер остановлен";
+            _heroSub.Text = "Нажми кнопку, чтобы принимать звук с ПК на телефоне";
+        }
+        else if (count == 0)
+        {
+            _power.State = PowerMode.Busy;
+            _heroTitle.Text = "Жду телефон";
+            _heroSub.Text = "Подключи телефон: Wi-Fi, USB-кабель, Bluetooth LE или Bluetooth";
+        }
+        else
+        {
+            _power.State = PowerMode.On;
+            _heroTitle.Text = "Звук идёт на телефон";
+            _heroSub.Text = phones;
+        }
+
+        var on = _running;
+        _chipTcp.Text = on ? $"Wi-Fi :{_tcp.Port}" : "Wi-Fi";
+        _chipTcp.Tone = on ? Tone.Success : Tone.Neutral;
+        _chipBle.Tone = on ? Tone.Success : Tone.Neutral;
+        _chipBt.Tone = on ? Tone.Success : Tone.Neutral;
+        _chipUsb.Tone = on && _usbCheck.Checked ? Tone.Success : Tone.Neutral;
+        foreach (var c in new[] { _chipTcp, _chipBle, _chipBt, _chipUsb }) c.Parent?.PerformLayout();
+    }
+
+    private void RefreshClientList()
+    {
+        List<(string, string)> rows;
+        lock (_sessionsLock)
+        {
+            rows = _sessions.Select(s => (string.IsNullOrWhiteSpace(s.PhoneName) ? s.Label : s.PhoneName!, s.Label)).ToList();
+        }
+        _clients.SetClients(rows);
+    }
+
+    // ================================================================================== логика
 
     private void PopulateDevices()
     {
         _renderDevices = AudioEngine.GetRenderDevices();
+
+        // Virtual outputs get a star so they stand out in the list.
+        string FormatDevice(object o) => o is MMDevice d ? (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.FriendlyName : o.ToString() ?? "";
+        _captureDeviceCombo.Format = FormatDevice;
+        _micOutputDeviceCombo.Format = FormatDevice;
 
         _captureDeviceCombo.Items.Add(new AutoChoice());
         _captureDeviceCombo.Items.Add(new DefaultChoice());
@@ -218,13 +509,6 @@ public sealed class MainForm : Form
         // 57120 was the old default; some reboots put it inside a range Windows reserves, so it is retired.
         if (_settings.Port is >= 1024 and <= 65535 and not 57120) _portInput.Value = _settings.Port.Value;
 
-        // Virtual outputs get a star so they stand out in the list.
-        void FormatDevice(object? _, ListControlConvertEventArgs e)
-        {
-            if (e.ListItem is MMDevice d) e.Value = (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.FriendlyName;
-        }
-        _captureDeviceCombo.Format += FormatDevice;
-        _micOutputDeviceCombo.Format += FormatDevice;
         _captureDeviceCombo.SelectedIndexChanged += (_, _) => UpdateDeviceHint();
         _micOutputDeviceCombo.SelectedIndexChanged += (_, _) => UpdateDeviceHint();
         UpdateDeviceHint();
@@ -241,19 +525,12 @@ public sealed class MainForm : Form
     private void UpdateDeviceHint()
     {
         var device = ResolveCaptureDevice();
-        string phones;
-        lock (_sessionsLock)
-        {
-            var names = _sessions.Select(s => s.PhoneName).Where(n => !string.IsNullOrWhiteSpace(n)).ToList();
-            phones = names.Count > 0 ? $" Подключён: {string.Join(", ", names)}." : "";
-        }
-
         if (device != null && VirtualAudio.IsVirtual(device))
         {
             _deviceHint.Text =
                 $"Звук берётся с виртуального выхода «{device.FriendlyName}». Выбери его выходом в Windows " +
                 "(Win+Ctrl+V или Параметры → Звук) — тогда звук пойдёт только на телефон. Чтобы выход назывался " +
-                "как телефон, переименуй его: «Звук Windows…» → устройство → Свойства → имя." + phones + MicNote();
+                "как телефон, переименуй его: «Звук Windows…» → устройство → Свойства → имя.";
         }
         else
         {
@@ -261,22 +538,21 @@ public sealed class MainForm : Form
             _deviceHint.Text =
                 $"Виртуального выхода нет — копируется звук с «{name}» (он продолжает звучать и на ПК). Чтобы телефон был " +
                 "отдельным выходом Windows, установи любой подписанный виртуальный аудиокабель (например, VB-CABLE) — " +
-                "сервер подхватит его сам." + phones + MicNote();
+                "сервер подхватит его сам.";
         }
+        _micHint.Text = MicNote();
     }
 
     private string MicNote() =>
         _micOutputDeviceCombo.SelectedItem is MicOffChoice
-            ? " Микрофон телефона на ПК не воспроизводится. Чтобы использовать его как микрофон в программах: включи " +
+            ? "Микрофон телефона на ПК не воспроизводится. Чтобы использовать его как микрофон в программах: включи " +
               "«Передавать микрофон» в приложении, а здесь выбери виртуальный кабель (CABLE Input) — в программе микрофоном " +
               "будет CABLE Output."
             : "";
 
     private void UpdateFirewallWarning()
     {
-        var blocked = !FirewallHelper.IsPublicInboundAllowed();
-        _firewallWarning.Visible = blocked;
-        _firewallButton.Visible = blocked;
+        _firewallCard.Visible = !FirewallHelper.IsPublicInboundAllowed();
     }
 
     /// <summary>
@@ -333,7 +609,7 @@ public sealed class MainForm : Form
             var micChoice = _micOutputDeviceCombo.SelectedItem;
             var micOutDevice = micChoice as MMDevice;
             var playMic = micChoice is not MicOffChoice;
-            var port = (int)_portInput.Value;
+            var port = _portInput.Value;
 
             _settings.CaptureDeviceId = (_captureDeviceCombo.SelectedItem as MMDevice)?.ID; // null = Auto/default
             _settings.MicOutputDeviceId = micChoice switch
@@ -349,7 +625,7 @@ public sealed class MainForm : Form
 
             // Capture/TCP are core — a failure here really should stop the whole start attempt.
             _engine.StartCapture(captureDevice);
-            _volume.Attach(captureDevice ?? new NAudio.CoreAudioApi.MMDeviceEnumerator().GetDefaultAudioEndpoint(NAudio.CoreAudioApi.DataFlow.Render, NAudio.CoreAudioApi.Role.Console));
+            _volume.Attach(captureDevice ?? new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Console));
             if (playMic) _engine.StartMicPlayback(micOutDevice);
             port = StartTcpWithFallback(port);
             _portInput.Value = port;
@@ -367,10 +643,10 @@ public sealed class MainForm : Form
             if (_usbCheck.Checked) _aoa.Start();
 
             _running = true;
-            _startStopButton.Text = "Стоп";
             _captureDeviceCombo.Enabled = false;
             _micOutputDeviceCombo.Enabled = false;
             _portInput.Enabled = false;
+            UpdateHero();
             AppendLog("Сервер запущен.");
         }
         catch (Exception ex)
@@ -422,7 +698,6 @@ public sealed class MainForm : Form
         _engine.StopMicPlayback();
 
         _running = false;
-        _startStopButton.Text = "Старт";
         _captureDeviceCombo.Enabled = true;
         _micOutputDeviceCombo.Enabled = true;
         _portInput.Enabled = true;
@@ -475,17 +750,10 @@ public sealed class MainForm : Form
 
     private void RefreshSessionsList()
     {
-        _sessionsList.Items.Clear();
-        lock (_sessionsLock)
-        {
-            foreach (var s in _sessions)
-            {
-                _sessionsList.Items.Add(string.IsNullOrWhiteSpace(s.PhoneName) ? s.Label : $"{s.PhoneName} — {s.Label}");
-            }
-        }
+        RefreshClientList();
+        UpdateHero();
         UpdateDeviceHint();
     }
-
 
     private void AppendLog(string line)
     {
@@ -495,5 +763,69 @@ public sealed class MainForm : Form
             return;
         }
         _logBox.AppendText($"[{DateTime.Now:HH:mm:ss}] {line}{Environment.NewLine}");
+    }
+
+    // ---- снимок окна для проверки внешнего вида (--shot) ------------------------------------------
+
+    /// <summary>Заполняет окно примерами и сохраняет картинку; сервер при этом не запускается.</summary>
+    internal void RenderDemo(string path)
+    {
+        _running = true;
+        _clients.SetClients(new List<(string, string)> { ("Ruslan Xperia", "Bluetooth LE (Ruslan Xperia)") });
+        _heroSub.Text = "Ruslan Xperia";
+        _power.State = PowerMode.On;
+        _heroTitle.Text = "Звук идёт на телефон";
+        foreach (var c in new[] { _chipTcp, _chipBle, _chipBt, _chipUsb }) c.Tone = Tone.Success;
+        _logBox.Text =
+            "[09:41:02] Захват звука: Ruslan Xperia (VB-Audio Virtual Cable)\r\n" +
+            "[09:41:02] TCP listening on 0.0.0.0:45121 (Wi-Fi, LAN)\r\n" +
+            "[09:41:03] Bluetooth LE: ищу телефон (приложение → режим «BT LE» → «Подключиться»)\r\n" +
+            "[09:41:11] Bluetooth LE: подключён к «Ruslan Xperia», MTU 517\r\n";
+        _firewallCard.Visible = true;
+        ClientSize = new Size(1080, 960); // taller than the real window so every card is visible in the picture
+        PerformLayout();
+        for (var i = 0; i < 4; i++) Application.DoEvents();
+        Application.DoEvents();
+        Invalidate(true);
+        Application.DoEvents();
+        var bmp = new Bitmap(ClientSize.Width, ClientSize.Height);
+        DrawToBitmap(bmp, new Rectangle(0, 0, ClientSize.Width, ClientSize.Height));
+        bmp.Save(path, System.Drawing.Imaging.ImageFormat.Png);
+    }
+}
+
+/// <summary>Логотип: скруглённый квадрат акцентом и четыре полоски эквалайзера.</summary>
+internal sealed class LogoMark : SkinControl
+{
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.SmoothingMode = SmoothingMode.AntiAlias;
+        var p = Skin.P;
+        using (var path = Skin.Round(new RectangleF(0, 0, Width - 1, Height - 1), 9))
+        using (var b = new SolidBrush(p.Accent))
+            g.FillPath(b, path);
+        using var bar = new SolidBrush(Color.White);
+        var cx = Width / 2f;
+        var heights = new[] { 0.28f, 0.55f, 0.4f, 0.22f };
+        var xs = new[] { -9f, -3f, 3f, 9f };
+        for (var i = 0; i < 4; i++)
+        {
+            var h = Height * heights[i];
+            using var rp = Skin.Round(new RectangleF(cx + xs[i] - 1.5f, (Height - h) / 2f, 3f, h), 1.5f);
+            g.FillPath(bar, rp);
+        }
+    }
+}
+
+/// <summary>Тонкая линия между блоками карточки.</summary>
+internal sealed class Divider : SkinControl
+{
+    public Divider() { Height = 1; }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        using var b = new SolidBrush(Skin.P.Line);
+        e.Graphics.FillRectangle(b, 0, 0, Width, 1);
     }
 }

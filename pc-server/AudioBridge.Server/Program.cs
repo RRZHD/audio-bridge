@@ -13,6 +13,20 @@ internal static class Program
     {
         ProcessTuning.Apply();
         ApplicationConfiguration.Initialize();
+        // `--shot <file.png> [--theme dark|light]`: render the window with sample data and exit (design checks).
+        var shot = Array.FindIndex(args, a => a.Equals("--shot", StringComparison.OrdinalIgnoreCase));
+        if (shot >= 0 && shot + 1 < args.Length)
+        {
+            var themeArg = Array.FindIndex(args, a => a.Equals("--theme", StringComparison.OrdinalIgnoreCase));
+            if (themeArg >= 0 && themeArg + 1 < args.Length)
+                AudioBridge.Server.Ui.Skin.Apply(args[themeArg + 1].Equals("dark", StringComparison.OrdinalIgnoreCase) ? AudioBridge.Server.Ui.ThemeMode.Dark : AudioBridge.Server.Ui.ThemeMode.Light);
+            var form = new MainForm();
+            if (themeArg >= 0) AudioBridge.Server.Ui.Skin.Apply(args[themeArg + 1].Equals("dark", StringComparison.OrdinalIgnoreCase) ? AudioBridge.Server.Ui.ThemeMode.Dark : AudioBridge.Server.Ui.ThemeMode.Light);
+            form.Show();
+            Application.DoEvents();
+            form.RenderDemo(args[shot + 1]);
+            return;
+        }
         Application.Run(new MainForm(autoStart: args.Contains("--autostart", StringComparer.OrdinalIgnoreCase)));
     }
 }

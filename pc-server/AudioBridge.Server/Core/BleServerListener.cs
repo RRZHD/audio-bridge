@@ -50,7 +50,7 @@ public sealed class BleServerListener : IDisposable
         };
         watcher.Start();
         _watcher = watcher;
-        Log?.Invoke("Bluetooth LE: ищу телефон (приложение → режим «BT LE» → «Подключиться»)");
+        Log?.Invoke("Bluetooth LE: ищу телефон (в приложении выбери «Bluetooth LE» и нажми кнопку включения)");
     }
 
     private async Task ConnectAsync(ulong address, CancellationToken ct)

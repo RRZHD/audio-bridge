@@ -18,6 +18,9 @@ public sealed class ServerSettings
     /// <summary>Look for a phone on USB and switch it into accessory mode (needs UsbDk). On by default.</summary>
     public bool UsbEnabled { get; set; } = true;
 
+    /// <summary>Тема окна: как в Windows (по умолчанию), светлая или тёмная.</summary>
+    public AudioBridge.Server.Ui.ThemeMode Theme { get; set; } = AudioBridge.Server.Ui.ThemeMode.Auto;
+
     private static string FilePath =>
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "AudioBridge", "server.json");
 
