@@ -135,6 +135,14 @@ public sealed class Card : Panel
 
     private void Invalidate() => base.Invalidate(true);
 
+    public override Size GetPreferredSize(Size proposedSize)
+    {
+        var w = proposedSize.Width > 0 && proposedSize.Width < int.MaxValue / 2 ? proposedSize.Width : Math.Max(Width, 200);
+        var child = Controls.Count > 0 ? Controls[0] : null;
+        if (child == null) return new Size(w, Padding.Vertical);
+        return new Size(w, child.GetPreferredSize(new Size(w - Padding.Horizontal, 0)).Height + Padding.Vertical);
+    }
+
     /// <summary>Высота карточки — по содержимому при текущей ширине (сама ширина задаётся колонкой).</summary>
     protected override void OnLayout(LayoutEventArgs levent)
     {
@@ -864,5 +872,162 @@ public sealed class VStack : Panel
             y += h + c.Margin.Bottom;
         }
         if (Height != y) Height = y;
+    }
+}
+
+/// <summary>Тонкая полоска прокрутки: только ползунок 5 px, без дорожки и стрелок; виден лишь когда есть что прокручивать.</summary>
+public sealed class ThinScrollBar : SkinControl
+{
+    private bool _hover, _drag;
+    private int _dragStartY, _dragStartOffset;
+
+    public int Maximum { get; private set; }   // content - viewport
+    public int Viewport { get; private set; }
+    public int Value { get; private set; }
+
+    public event Action<int>? Scrolled;
+
+    public ThinScrollBar()
+    {
+        Width = 12;
+        Cursor = Cursors.Default;
+    }
+
+    public void SetRange(int content, int viewport, int value)
+    {
+        Viewport = viewport;
+        Maximum = Math.Max(0, content - viewport);
+        Value = Math.Clamp(value, 0, Maximum);
+        Visible = Maximum > 0;
+        Invalidate();
+    }
+
+    private Rectangle Thumb()
+    {
+        var track = Math.Max(1, Height - 8);
+        var content = Maximum + Viewport;
+        var h = Math.Max(36, (int)((long)Viewport * track / Math.Max(1, content)));
+        var y = 4 + (Maximum == 0 ? 0 : (int)((long)Value * (track - h) / Maximum));
+        return new Rectangle(Width / 2 - 3, y, 6, h);
+    }
+
+    protected override void OnMouseEnter(EventArgs e) { _hover = true; Invalidate(); base.OnMouseEnter(e); }
+    protected override void OnMouseLeave(EventArgs e) { _hover = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        var t = Thumb();
+        if (t.Contains(e.Location)) { _drag = true; _dragStartY = e.Y; _dragStartOffset = Value; Capture = true; }
+        else
+        {
+            // Клик по дорожке — страница вверх/вниз.
+            Scrolled?.Invoke(Value + (e.Y < t.Y ? -Viewport : Viewport));
+        }
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        if (!_drag) return;
+        var track = Math.Max(1, Height - 8) - Thumb().Height;
+        if (track <= 0) return;
+        Scrolled?.Invoke(_dragStartOffset + (int)((long)(e.Y - _dragStartY) * Maximum / track));
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e) { _drag = false; Capture = false; base.OnMouseUp(e); }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        if (Maximum <= 0) return;
+        var g = e.Graphics;
+        Smooth(g);
+        var p = Skin.P;
+        var t = Thumb();
+        var color = Skin.Blend(p.Text, p.Bg, _hover || _drag ? 0.38f : 0.2f);
+        using var path = Skin.Round(new RectangleF(t.X, t.Y, t.Width, t.Height), t.Width / 2f);
+        using var b = new SolidBrush(color);
+        g.FillPath(b, path);
+    }
+}
+
+/// <summary>Прокручиваемая область со своей тонкой полоской поверх контента; колесо мыши работает над всей областью.</summary>
+public sealed class ScrollHost : Panel, IMessageFilter
+{
+    private readonly ThinScrollBar _bar = new();
+    private VStack? _content;
+    private int _offset;
+    private const int Gutter = 16;
+
+    public ScrollHost()
+    {
+        BackColor = Color.Transparent;
+        Controls.Add(_bar);
+        _bar.Scrolled += v => SetOffset(v);
+    }
+
+    /// <summary>Ширина, которую получает содержимое (полоска лежит рядом, в запасе справа).</summary>
+    public int ContentWidth => Math.Max(100, Width - Gutter);
+
+    public VStack Content => _content ?? throw new InvalidOperationException();
+
+    public void SetContent(VStack content)
+    {
+        _content = content;
+        content.Dock = DockStyle.None;
+        Controls.Add(content);
+        _bar.BringToFront();
+        content.SizeChanged += (_, _) => Relayout();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        Application.AddMessageFilter(this);
+    }
+
+    protected override void OnHandleDestroyed(EventArgs e)
+    {
+        Application.RemoveMessageFilter(this);
+        base.OnHandleDestroyed(e);
+    }
+
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        Relayout();
+    }
+
+    private void Relayout()
+    {
+        if (_content == null || Width < 40) return;
+        var w = ContentWidth;
+        var h = _content.GetPreferredSize(new Size(w, 0)).Height;
+        _offset = Math.Clamp(_offset, 0, Math.Max(0, h - Height));
+        _content.SetBounds(0, -_offset, w, h);
+        _bar.SetBounds(Width - 12, 0, 12, Height);
+        _bar.SetRange(h, Height, _offset);
+    }
+
+    private void SetOffset(int value)
+    {
+        if (_content == null) return;
+        var max = Math.Max(0, _content.Height - Height);
+        _offset = Math.Clamp(value, 0, max);
+        _content.Top = -_offset;
+        _bar.SetRange(_content.Height, Height, _offset);
+    }
+
+    public bool PreFilterMessage(ref Message m)
+    {
+        const int WM_MOUSEWHEEL = 0x020A;
+        if (m.Msg != WM_MOUSEWHEEL || !IsHandleCreated || !Visible) return false;
+        if (!RectangleToScreen(ClientRectangle).Contains(Cursor.Position)) return false;
+        // A multiline text box under the cursor scrolls itself.
+        if (FromHandle(m.HWnd) is TextBox { Multiline: true }) return false;
+        if (_bar.Maximum <= 0) return false;
+        var delta = (short)((long)m.WParam >> 16);
+        SetOffset(_offset - delta / 120 * 60);
+        return true;
     }
 }

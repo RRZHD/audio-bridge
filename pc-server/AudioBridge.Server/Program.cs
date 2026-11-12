@@ -20,6 +20,8 @@ internal static class Program
             var themeArg = Array.FindIndex(args, a => a.Equals("--theme", StringComparison.OrdinalIgnoreCase));
             if (themeArg >= 0 && themeArg + 1 < args.Length)
                 AudioBridge.Server.Ui.Skin.Apply(args[themeArg + 1].Equals("dark", StringComparison.OrdinalIgnoreCase) ? AudioBridge.Server.Ui.ThemeMode.Dark : AudioBridge.Server.Ui.ThemeMode.Light);
+            var heightArg = Array.FindIndex(args, a => a.Equals("--height", StringComparison.OrdinalIgnoreCase));
+            if (heightArg >= 0 && heightArg + 1 < args.Length && int.TryParse(args[heightArg + 1], out var shotHeight)) MainForm.ShotHeight = shotHeight;
             var form = new MainForm();
             if (themeArg >= 0) AudioBridge.Server.Ui.Skin.Apply(args[themeArg + 1].Equals("dark", StringComparison.OrdinalIgnoreCase) ? AudioBridge.Server.Ui.ThemeMode.Dark : AudioBridge.Server.Ui.ThemeMode.Light);
             form.Show();

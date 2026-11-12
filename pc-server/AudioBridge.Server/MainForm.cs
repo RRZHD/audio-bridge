@@ -99,6 +99,14 @@ public sealed class MainForm : Form
         _bt.ClientAccepted += OnBluetoothClientAccepted;
         _ble.ClientAccepted += OnBluetoothClientAccepted; // LE rides the same Opus path as classic Bluetooth
 
+        // The first layout passes (wrapping, auto-sizing) must not be visible: show the window only once it is settled.
+        Opacity = 0;
+        Shown += (_, _) => BeginInvoke(new Action(() =>
+        {
+            for (var i = 0; i < 4; i++) Application.DoEvents();
+            Opacity = 1;
+        }));
+
         FormClosing += (_, _) => StopAll();
         Shown += (_, _) => UpdateFirewallWarning();
         if (autoStart) Shown += (_, _) => StartAll(); // `AudioBridgeServer.exe --autostart`
@@ -123,7 +131,7 @@ public sealed class MainForm : Form
             Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1, Margin = Padding.Empty,
             Padding = new Padding(20, 0, 20, 20),
         };
-        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 380));
+        body.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 396));
         body.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         body.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         root.Controls.Add(body, 0, 1);
@@ -167,49 +175,34 @@ public sealed class MainForm : Form
 
     private Control BuildLeft()
     {
-        var column = ScrollColumn();
+        var host = ScrollColumn(out var column);
         column.Controls.Add(Wrap(BuildHeroCard()));
         column.Controls.Add(Wrap(BuildClientsCard()));
-        return column.Parent ?? column;
+        return host;
     }
 
     private Control BuildRight()
     {
-        var column = ScrollColumn();
-        column.Margin = new Padding(0);
+        var host = ScrollColumn(out var column);
         column.Controls.Add(Wrap(BuildSoundCard()));
         column.Controls.Add(Wrap(BuildConnectCard()));
         column.Controls.Add(Wrap(BuildLogCard()));
-        return column.Parent ?? column;
+        return host;
     }
 
-    /// <summary>Вертикальная колонка карточек с прокруткой; возвращает панель-колонку (родитель — прокручиваемая область).</summary>
-    private static FlowLayoutPanel ScrollColumn()
+    /// <summary>Колонка карточек с прокруткой тонкой полоской (без системного скроллбара).</summary>
+    private static ScrollHost ScrollColumn(out VStack column)
     {
-        var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true, Padding = new Padding(0, 0, 0, 0), Margin = new Padding(0, 0, 16, 0) };
-        var flow = new FlowLayoutPanel
-        {
-            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoSize = true,
-            Dock = DockStyle.Top, Margin = Padding.Empty,
-        };
-        scroll.Controls.Add(flow);
-        // Каждая карточка во всю ширину прокручиваемой области.
-        scroll.Resize += (_, _) =>
-        {
-            var w = scroll.ClientSize.Width - (scroll.VerticalScroll.Visible ? 0 : 0);
-            flow.Width = w;
-            foreach (Control c in flow.Controls) c.Width = Math.Max(120, w - c.Margin.Horizontal);
-        };
-        flow.ControlAdded += (_, e) =>
-        {
-            e.Control!.Width = Math.Max(120, scroll.ClientSize.Width - e.Control.Margin.Horizontal);
-        };
-        return flow;
+        var host = new ScrollHost { Dock = DockStyle.Fill, Margin = Padding.Empty };
+        column = new VStack { Dock = DockStyle.None };
+        host.SetContent(column);
+        return host;
     }
 
     private static Control Wrap(Card card)
     {
         card.Margin = new Padding(0, 0, 0, 14);
+        card.Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top;
         return card;
     }
 
@@ -393,7 +386,7 @@ public sealed class MainForm : Form
 
         _logBox = new TextBox
         {
-            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.Vertical, BorderStyle = BorderStyle.None,
+            Multiline = true, ReadOnly = true, ScrollBars = ScrollBars.None, BorderStyle = BorderStyle.None,
             Height = 230, Font = Skin.Mono(9f), WordWrap = true,
         };
         Add(stack, _logBox, 10);
@@ -418,6 +411,17 @@ public sealed class MainForm : Form
         foreach (var pill in _themePills) pill.Selected = (ThemeMode)pill.Tag! == Skin.Mode;
         if (IsHandleCreated) Skin.StyleWindow(this);
         Invalidate(true);
+    }
+
+    /// <summary>Композитная отрисовка окна: дети рисуются во внеэкранный буфер целиком, без мерцания и «проявления» текста.</summary>
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            cp.ExStyle |= 0x02000000; // WS_EX_COMPOSITED
+            return cp;
+        }
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -768,6 +772,8 @@ public sealed class MainForm : Form
     // ---- снимок окна для проверки внешнего вида (--shot) ------------------------------------------
 
     /// <summary>Заполняет окно примерами и сохраняет картинку; сервер при этом не запускается.</summary>
+    internal static int ShotHeight = 960; // taller than the real window by default, so every card is visible
+
     internal void RenderDemo(string path)
     {
         _running = true;
@@ -782,7 +788,7 @@ public sealed class MainForm : Form
             "[09:41:03] Bluetooth LE: ищу телефон (приложение → режим «BT LE» → «Подключиться»)\r\n" +
             "[09:41:11] Bluetooth LE: подключён к «Ruslan Xperia», MTU 517\r\n";
         _firewallCard.Visible = true;
-        ClientSize = new Size(1080, 960); // taller than the real window so every card is visible in the picture
+        ClientSize = new Size(1080, ShotHeight);
         PerformLayout();
         for (var i = 0; i < 4; i++) Application.DoEvents();
         Application.DoEvents();
