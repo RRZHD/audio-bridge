@@ -34,6 +34,8 @@ public static class VirtualAudio
     /// <summary>0 = best match ... higher = weaker; -1 = not a virtual output.</summary>
     public static int Rank(string friendlyName)
     {
+        // Voicemeeter's adapter is also called "VB-Audio ..."; it must rank below the real cables.
+        if (friendlyName.Contains("voicemeeter", StringComparison.OrdinalIgnoreCase)) return Array.IndexOf(Preferred, "voicemeeter");
         for (var i = 0; i < Preferred.Length; i++)
         {
             if (friendlyName.Contains(Preferred[i], StringComparison.OrdinalIgnoreCase)) return i;
@@ -69,10 +71,15 @@ public static class VirtualAudio
     /// </summary>
     public static MMDevice? FindPartnerCapture(MMDevice render, IReadOnlyList<MMDevice> captures)
     {
+        // Voicemeeter has many endpoints in one adapter: its main input pairs with bus B1.
+        if (VoicemeeterRemote.IsMainInput(render.FriendlyName))
+            return captures.FirstOrDefault(c => VoicemeeterRemote.IsMainMic(c.FriendlyName));
+
         try
         {
             var container = render.Properties[ContainerIdKey]?.Value;
-            if (container != null)
+            // Virtual drivers share the "no container" placeholder, which says nothing about pairing.
+            if (container != null && !container.ToString()!.EndsWith("ffff-ffffffffffff", StringComparison.OrdinalIgnoreCase))
             {
                 var byContainer = captures.FirstOrDefault(c =>
                 {

@@ -486,7 +486,8 @@ public sealed class MainForm : Form
 
     private void PopulateDevices()
     {
-        _renderDevices = AudioEngine.GetRenderDevices();
+        // Voicemeeter registers ~15 endpoints; only its main input is useful here.
+        _renderDevices = AudioEngine.GetRenderDevices().Where(d => !VoicemeeterRemote.IsClutter(d.FriendlyName)).ToList();
 
         // Virtual outputs get a star so they stand out in the list.
         string FormatDevice(object o) => o is MMDevice d ? (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.FriendlyName : o.ToString() ?? "";
@@ -588,6 +589,17 @@ public sealed class MainForm : Form
         }
     }
 
+    /// <summary>If the voice goes into Voicemeeter, set its routing (and start it) in the background.</summary>
+    private void PrepareMicRoute(object? choice)
+    {
+        if (choice is not MMDevice d || !VoicemeeterRemote.IsMainInput(d.FriendlyName)) return;
+        System.Threading.Tasks.Task.Run(() =>
+        {
+            var msg = VoicemeeterRemote.ConfigureMicRoute();
+            if (msg != null) BeginInvoke(() => AppendLog(msg));
+        });
+    }
+
     /// <summary>Applies the chosen microphone output right away: restarts playback if the server is running.</summary>
     private void ApplyMicOutput()
     {
@@ -600,6 +612,7 @@ public sealed class MainForm : Form
         };
         _settings.Save();
         if (!_running) return;
+        PrepareMicRoute(choice);
         try
         {
             _engine.StopMicPlayback();
@@ -631,7 +644,7 @@ public sealed class MainForm : Form
                 : hasSecondCable
                     ? "Выбери выше «Микрофон для программ» — и в Discord появится микрофон с голосом телефона."
                     : "Чтобы телефон был микрофоном в Discord, нужен ещё один виртуальный кабель, отдельный от того, что играет звук " +
-                      "на телефон (например, VB-CABLE A). Пока его нет — можно только слышать голос на ПК (выбери устройство вывода).";
+                      "на телефон (бесплатный Voicemeeter подойдёт: сервер сам настроит его маршрут). Пока его нет — можно только слышать голос на ПК (выбери устройство вывода).";
         }
 
         if (choice is MMDevice d && VirtualAudio.IsCable(d))
@@ -723,7 +736,7 @@ public sealed class MainForm : Form
             // Capture/TCP are core — a failure here really should stop the whole start attempt.
             _engine.StartCapture(captureDevice);
             _volume.Attach(captureDevice ?? new MMDeviceEnumerator().GetDefaultAudioEndpoint(DataFlow.Render, Role.Console));
-            if (playMic) _engine.StartMicPlayback(micOutDevice);
+            if (playMic) { PrepareMicRoute(micChoice); _engine.StartMicPlayback(micOutDevice); }
             port = StartTcpWithFallback(port);
             _portInput.Value = port;
             _settings.Port = port;
