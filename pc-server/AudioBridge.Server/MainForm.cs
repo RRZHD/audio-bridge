@@ -28,6 +28,7 @@ public sealed class MainForm : Form
 
     private readonly ServerSettings _settings = ServerSettings.Load();
     private List<MMDevice> _renderDevices = new();
+    private List<MMDevice> _captureEndpoints = new();
 
     /// <summary>Combo entry meaning "pick for me": a virtual cable if one is installed.</summary>
     private sealed class AutoChoice
@@ -293,7 +294,7 @@ public sealed class MainForm : Form
 
         Add(stack, new Divider(), 16);
         Add(stack, new ThemedLabel("Микрофон телефона → ПК", LabelRole.Heading), 16);
-        Add(stack, new ThemedLabel("Куда воспроизводить микрофон телефона (по умолчанию — никуда)", LabelRole.Muted) { Wrap = true }, 2);
+        Add(stack, new ThemedLabel("Как использовать голос с телефона: как микрофон для Discord и других программ или просто слышать на ПК", LabelRole.Muted) { Wrap = true }, 2);
         _micOutputDeviceCombo = new SelectBox();
         Add(stack, _micOutputDeviceCombo, 10);
         _micHint = new ThemedLabel("", LabelRole.Muted) { Wrap = true };
@@ -490,7 +491,8 @@ public sealed class MainForm : Form
         // Virtual outputs get a star so they stand out in the list.
         string FormatDevice(object o) => o is MMDevice d ? (VirtualAudio.IsVirtual(d) ? "★ " : "") + d.FriendlyName : o.ToString() ?? "";
         _captureDeviceCombo.Format = FormatDevice;
-        _micOutputDeviceCombo.Format = FormatDevice;
+        _captureEndpoints = new MMDeviceEnumerator().EnumerateAudioEndPoints(DataFlow.Capture, DeviceState.Active).ToList();
+        _micOutputDeviceCombo.Format = FormatMicChoice;
 
         _captureDeviceCombo.Items.Add(new AutoChoice());
         _captureDeviceCombo.Items.Add(new DefaultChoice());
@@ -563,6 +565,29 @@ public sealed class MainForm : Form
         _micHint.Text = MicNote();
     }
 
+    /// <summary>The microphone (as a program such as Discord sees it) that a virtual output turns into, if any.</summary>
+    private string? MicNameFor(MMDevice render) =>
+        VirtualAudio.IsCable(render) ? VirtualAudio.FindPartnerCapture(render, _captureEndpoints)?.FriendlyName : null;
+
+    /// <summary>List entries are described by what the user gets: a microphone for programs, or sound on a device.</summary>
+    private string FormatMicChoice(object o)
+    {
+        switch (o)
+        {
+            case MicOffChoice:
+                return "Не использовать микрофон телефона";
+            case DefaultChoice:
+                return "Слышать на ПК: устройство вывода по умолчанию";
+            case MMDevice d when VirtualAudio.IsCable(d):
+                var busy = ResolveCaptureDevice()?.ID == d.ID ? " (занят звуком для телефона)" : "";
+                return $"Микрофон для программ: «{MicNameFor(d) ?? d.FriendlyName}»{busy}";
+            case MMDevice d:
+                return $"Слышать на ПК: {d.FriendlyName}";
+            default:
+                return o.ToString() ?? "";
+        }
+    }
+
     /// <summary>Applies the chosen microphone output right away: restarts playback if the server is running.</summary>
     private void ApplyMicOutput()
     {
@@ -589,33 +614,37 @@ public sealed class MainForm : Form
         }
     }
 
-    /// <summary>What the user needs to know about the microphone right now.</summary>
+    /// <summary>What the user needs to know about the microphone right now — in terms of the microphone they pick in Discord.</summary>
     private string MicNote()
     {
         bool receiving;
         lock (_sessionsLock) { receiving = _sessions.Any(s => s.MicActive); }
         var choice = _micOutputDeviceCombo.SelectedItem;
-        var off = choice is MicOffChoice;
+        var capture = ResolveCaptureDevice();
+        var phone = receiving ? "Телефон присылает голос. " : "Включи «Микрофон телефона → ПК» в приложении на телефоне. ";
 
-        if (receiving && off)
-            return "Телефон присылает микрофон, но он нигде не воспроизводится. Выбери выход выше — переключение действует сразу.";
-
-        if (receiving)
+        if (choice is MicOffChoice)
         {
-            var target = (choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию";
-            var capture = ResolveCaptureDevice();
-            var same = choice is MMDevice d && capture != null && d.ID == capture.ID;
-            return same
-                ? $"Микрофон идёт на «{target}» — это тот же выход, с которого берётся звук для телефона: голос вернётся на телефон. " +
-                  "Для микрофона в программах нужен второй виртуальный кабель."
-                : $"Микрофон телефона принимается и идёт на «{target}».";
+            var hasSecondCable = _renderDevices.Any(d => VirtualAudio.IsCable(d) && d.ID != capture?.ID);
+            return receiving
+                ? "Телефон присылает микрофон, но он никуда не идёт: выбери выше, как его использовать."
+                : hasSecondCable
+                    ? "Выбери выше «Микрофон для программ» — и в Discord появится микрофон с голосом телефона."
+                    : "Чтобы телефон был микрофоном в Discord, нужен ещё один виртуальный кабель, отдельный от того, что играет звук " +
+                      "на телефон (например, VB-CABLE A). Пока его нет — можно только слышать голос на ПК (выбери устройство вывода).";
         }
 
-        return off
-            ? "Микрофон телефона не воспроизводится. Включи «Микрофон телефона → ПК» в приложении и выбери здесь выход: " +
-              "динамики — чтобы слышать, виртуальный кабель — чтобы использовать как микрофон в программах " +
-              "(нужен отдельный кабель, не тот, что играет на телефон)."
-            : "Жду микрофон: включи «Микрофон телефона → ПК» в приложении.";
+        if (choice is MMDevice d && VirtualAudio.IsCable(d))
+        {
+            if (capture?.ID == d.ID)
+                return "Этот кабель уже занят: по нему звук идёт на телефон. Голос вернулся бы на телефон. Нужен второй виртуальный кабель.";
+            var mic = MicNameFor(d) ?? d.FriendlyName;
+            return $"{phone}В Discord: Настройки → Голос и видео → Устройство ввода → выбери «{mic}». " +
+                   "В других программах так же — выбери этот микрофон.";
+        }
+
+        var target = (choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию";
+        return $"{phone}Голос играет на «{target}» — это для прослушивания, не микрофон. Для Discord выбери «Микрофон для программ».";
     }
 
     private void UpdateFirewallWarning()

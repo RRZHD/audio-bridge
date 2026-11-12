@@ -47,6 +47,9 @@ public static class VirtualAudio
 
     public static bool IsVirtual(MMDevice device) => Rank(device.FriendlyName) >= 0;
 
+    /// <summary>A real cable (playback side feeds a matching microphone) — Steam's output is virtual but is not one.</summary>
+    public static bool IsCable(MMDevice device) { var r = Rank(device.FriendlyName); return r >= 0 && r < Preferred.Length; }
+
     /// <summary>The best virtual output to capture automatically, or null if the user has none installed.</summary>
     public static MMDevice? FindBestForAuto(IEnumerable<MMDevice> devices) =>
         devices
@@ -55,4 +58,42 @@ public static class VirtualAudio
             .OrderBy(x => x.rank)
             .Select(x => x.device)
             .FirstOrDefault();
+
+    private static readonly PropertyKey ContainerIdKey = new(new Guid("8c7ed206-3f8a-4827-b3ab-ae9e1faefc6c"), 2);
+
+    /// <summary>
+    /// The microphone (capture endpoint) that corresponds to a virtual cable's playback side: what a program
+    /// like Discord has to pick as "input device" to hear what is played into <paramref name="render"/>.
+    /// Matched by the shared device container; failing that by the adapter name in brackets
+    /// ("CABLE Input (VB-Audio Virtual Cable)" ↔ "CABLE Output (VB-Audio Virtual Cable)").
+    /// </summary>
+    public static MMDevice? FindPartnerCapture(MMDevice render, IReadOnlyList<MMDevice> captures)
+    {
+        try
+        {
+            var container = render.Properties[ContainerIdKey]?.Value;
+            if (container != null)
+            {
+                var byContainer = captures.FirstOrDefault(c =>
+                {
+                    try { return Equals(c.Properties[ContainerIdKey]?.Value, container); }
+                    catch { return false; }
+                });
+                if (byContainer != null) return byContainer;
+            }
+        }
+        catch
+        {
+            // fall through to the name heuristic
+        }
+
+        var name = render.FriendlyName;
+        var open = name.LastIndexOf('(');
+        var adapter = open >= 0 ? name[open..] : null;
+        return captures
+            .Where(c => IsVirtual(c) || (adapter != null && c.FriendlyName.EndsWith(adapter, StringComparison.OrdinalIgnoreCase)))
+            .Where(c => adapter == null || c.FriendlyName.EndsWith(adapter, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(c => c.FriendlyName.Contains("output", StringComparison.OrdinalIgnoreCase))
+            .FirstOrDefault();
+    }
 }
