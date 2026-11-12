@@ -108,7 +108,17 @@ class AppState(
     fun updateWifiQuality(v: Int) { wifiQuality = v; settings.wifiQuality = v; custom() }
     fun updateMaxRate(v: Int) { maxRate = v; settings.maxRawSampleRate = v }
     fun updateTheme(id: String) { themeId = id; settings.themeId = id }
-    fun updateMic(on: Boolean) { micEnabled = on; settings.micEnabled = on }
+    fun updateMic(on: Boolean) {
+        micEnabled = on
+        settings.micEnabled = on
+        // A running session picks the switch up at once (no reconnect needed).
+        if (link != Link.OFF) {
+            context.startService(Intent(context, AudioService::class.java).apply {
+                action = AudioService.ACTION_MIC
+                putExtra(AudioService.EXTRA_MIC_ON, on)
+            })
+        }
+    }
     fun updateAutoConnect(on: Boolean) { autoConnect = on; settings.autoConnect = on }
 
     fun selectMode(m: Mode) {

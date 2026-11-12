@@ -151,10 +151,14 @@ private fun QuickToggles(state: AppState) {
         Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
             MgrSwitchRow(
                 title = "Микрофон телефона → ПК",
-                hint = if (state.micEnabled) "Включится после подключения" else "Выключен: микрофон не используется",
+                hint = when {
+                    state.micEnabled && state.link == Link.ON -> "Микрофон идёт на ПК (там выбери, куда его воспроизводить)"
+                    state.micEnabled -> "Включится после подключения"
+                    else -> "Выключен: микрофон не используется"
+                },
                 checked = state.micEnabled,
                 onChange = state::updateMic,
-                enabled = state.link == Link.OFF,
+
             )
             MgrDivider()
             MgrSwitchRow(

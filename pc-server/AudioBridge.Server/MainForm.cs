@@ -515,7 +515,22 @@ public sealed class MainForm : Form
         if (_settings.Port is >= 1024 and <= 65535 and not 57120) _portInput.Value = _settings.Port.Value;
 
         _captureDeviceCombo.SelectedIndexChanged += (_, _) => UpdateDeviceHint();
-        _micOutputDeviceCombo.SelectedIndexChanged += (_, _) => UpdateDeviceHint();
+        // The microphone output can be switched at any time, also while the server is running.
+        _micOutputDeviceCombo.SelectedIndexChanged += (_, _) => { ApplyMicOutput(); UpdateDeviceHint(); };
+        var micTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        var micWasActive = false;
+        micTimer.Tick += (_, _) =>
+        {
+            _micHint.Text = MicNote();
+            bool active;
+            lock (_sessionsLock) { active = _sessions.Any(s => s.MicActive); }
+            if (active != micWasActive)
+            {
+                micWasActive = active;
+                AppendLog(active ? "Микрофон телефона: принимается." : "Микрофон телефона: не приходит.");
+            }
+        };
+        micTimer.Start();
         UpdateDeviceHint();
     }
 
@@ -548,12 +563,60 @@ public sealed class MainForm : Form
         _micHint.Text = MicNote();
     }
 
-    private string MicNote() =>
-        _micOutputDeviceCombo.SelectedItem is MicOffChoice
-            ? "Микрофон телефона на ПК не воспроизводится. Чтобы использовать его как микрофон в программах: включи " +
-              "«Передавать микрофон» в приложении, а здесь выбери виртуальный кабель (CABLE Input) — в программе микрофоном " +
-              "будет CABLE Output."
-            : "";
+    /// <summary>Applies the chosen microphone output right away: restarts playback if the server is running.</summary>
+    private void ApplyMicOutput()
+    {
+        var choice = _micOutputDeviceCombo.SelectedItem;
+        _settings.MicOutputDeviceId = choice switch
+        {
+            MMDevice d => d.ID,
+            DefaultChoice => MicOutputDefault,
+            _ => null, // off
+        };
+        _settings.Save();
+        if (!_running) return;
+        try
+        {
+            _engine.StopMicPlayback();
+            if (choice is not MicOffChoice) _engine.StartMicPlayback(choice as MMDevice);
+            AppendLog(choice is MicOffChoice
+                ? "Микрофон телефона: воспроизведение выключено."
+                : $"Микрофон телефона → {(choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию"}");
+        }
+        catch (Exception ex)
+        {
+            AppendLog($"Микрофон: не удалось открыть выход — {ex.Message}");
+        }
+    }
+
+    /// <summary>What the user needs to know about the microphone right now.</summary>
+    private string MicNote()
+    {
+        bool receiving;
+        lock (_sessionsLock) { receiving = _sessions.Any(s => s.MicActive); }
+        var choice = _micOutputDeviceCombo.SelectedItem;
+        var off = choice is MicOffChoice;
+
+        if (receiving && off)
+            return "Телефон присылает микрофон, но он нигде не воспроизводится. Выбери выход выше — переключение действует сразу.";
+
+        if (receiving)
+        {
+            var target = (choice as MMDevice)?.FriendlyName ?? "устройство вывода по умолчанию";
+            var capture = ResolveCaptureDevice();
+            var same = choice is MMDevice d && capture != null && d.ID == capture.ID;
+            return same
+                ? $"Микрофон идёт на «{target}» — это тот же выход, с которого берётся звук для телефона: голос вернётся на телефон. " +
+                  "Для микрофона в программах нужен второй виртуальный кабель."
+                : $"Микрофон телефона принимается и идёт на «{target}».";
+        }
+
+        return off
+            ? "Микрофон телефона не воспроизводится. Включи «Микрофон телефона → ПК» в приложении и выбери здесь выход: " +
+              "динамики — чтобы слышать, виртуальный кабель — чтобы использовать как микрофон в программах " +
+              "(нужен отдельный кабель, не тот, что играет на телефон)."
+            : "Жду микрофон: включи «Микрофон телефона → ПК» в приложении.";
+    }
 
     private void UpdateFirewallWarning()
     {
@@ -649,7 +712,6 @@ public sealed class MainForm : Form
 
             _running = true;
             _captureDeviceCombo.Enabled = false;
-            _micOutputDeviceCombo.Enabled = false;
             _portInput.Enabled = false;
             UpdateHero();
             AppendLog("Сервер запущен.");

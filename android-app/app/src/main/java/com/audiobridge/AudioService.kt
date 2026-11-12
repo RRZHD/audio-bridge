@@ -36,6 +36,8 @@ class AudioService : Service() {
     companion object {
         const val ACTION_START = "com.audiobridge.action.START"
         const val ACTION_STOP = "com.audiobridge.action.STOP"
+        const val ACTION_MIC = "com.audiobridge.action.MIC"
+        const val EXTRA_MIC_ON = "mic_on"
         const val EXTRA_MODE = "mode"
         const val EXTRA_HOST = "host"
         const val EXTRA_PORT = "port"
@@ -68,6 +70,9 @@ class AudioService : Service() {
         const val DEAD_CONNECTION_MS = 9000L
 
         /** True while the bridge service is running (UI and the Quick Settings tile read it). */
+        /** The microphone should be sent to the PC right now (the app switch; may change mid-session). */
+        @Volatile var micWanted = false
+
         @Volatile var active = false
             private set
 
@@ -86,6 +91,12 @@ class AudioService : Service() {
         if (intent?.action == ACTION_STOP) {
             stopBridge()
             return START_NOT_STICKY
+        }
+
+        if (intent?.action == ACTION_MIC) {
+            // Switched from the app while a session runs; the mic thread picks it up.
+            micWanted = intent.getBooleanExtra(EXTRA_MIC_ON, false)
+            return START_STICKY
         }
 
         val mode = intent?.getStringExtra(EXTRA_MODE) ?: return START_NOT_STICKY
@@ -379,24 +390,47 @@ class AudioService : Service() {
 
         // Mic thread: AudioRecord -> AUDIO_MIC frames. Off unless the user switched it on — a phone
         // microphone that is silently live (and, on the PC, played in the user's headphones) is a
-        // nasty default.
-        val micEnabled = Settings(applicationContext).micEnabled
-        if (!micEnabled) StatusBus.postLog("Микрофон не передаётся (включается переключателем в приложении)")
-        val micThread = if (!micEnabled) null else thread(name = "AudioBridge-mic") {
+        // nasty default. The switch can be flipped while the session runs (ACTION_MIC): the thread
+        // opens or releases the recorder on demand, and a mic failure never takes the session down.
+        micWanted = Settings(applicationContext).micEnabled
+        if (!micWanted) StatusBus.postLog("Микрофон не передаётся (включается переключателем в приложении)")
+        val micThread = thread(name = "AudioBridge-mic") {
             Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
             var record: AudioRecord? = null
+            val buf = ShortArray(MIC_SAMPLES_PER_CHUNK)
             try {
-                val minBuf = AudioRecord.getMinBufferSize(
-                    MIC_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
-                )
-                record = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_COMMUNICATION,
-                    MIC_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
-                    maxOf(minBuf, MIC_SAMPLES_PER_CHUNK * 2 * 4)
-                )
-                record.startRecording()
-                val buf = ShortArray(MIC_SAMPLES_PER_CHUNK)
                 while (sessionAlive.get()) {
+                    if (!micWanted) {
+                        if (record != null) {
+                            try { record.stop(); record.release() } catch (_: Exception) {}
+                            record = null
+                            StatusBus.postLog("Микрофон выключен")
+                        }
+                        Thread.sleep(150)
+                        continue
+                    }
+                    if (record == null) {
+                        try {
+                            ensureMicForeground()
+                            val minBuf = AudioRecord.getMinBufferSize(
+                                MIC_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT
+                            )
+                            record = AudioRecord(
+                                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                                MIC_SAMPLE_RATE, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT,
+                                maxOf(minBuf, MIC_SAMPLES_PER_CHUNK * 2 * 4)
+                            )
+                            record.startRecording()
+                            StatusBus.postLog("Микрофон включён")
+                        } catch (e: Exception) {
+                            Log.e(TAG, "mic start failed", e)
+                            StatusBus.postLog("Микрофон не включился: $e")
+                            micWanted = false
+                            record?.let { try { it.release() } catch (_: Exception) {} }
+                            record = null
+                            continue
+                        }
+                    }
                     val read = record.read(buf, 0, buf.size, AudioRecord.READ_BLOCKING)
                     if (read <= 0) continue
                     val encoded = micCodec.encode(buf, read)
@@ -404,13 +438,15 @@ class AudioService : Service() {
                         FrameIO.writeFrame(conn.output, FrameType.AUDIO_MIC, encoded)
                     }
                 }
+            } catch (e: InterruptedException) {
+                // session ending
             } catch (e: Exception) {
                 Log.e(TAG, "mic stopped", e)
                 StatusBus.postLog("Mic capture stopped: $e")
+                closeSession() // a failed write means the link is gone
             } finally {
                 record?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
             }
-            closeSession()
         }
 
         // Watchdog: PING keepalive + dead-connection detection.
@@ -436,7 +472,19 @@ class AudioService : Service() {
 
         closeSession()
         readerThread.join(2000)
-        micThread?.join(2000)
+        micThread.join(2000)
+    }
+
+    /** The microphone needs the microphone foreground-service type; add it when the mic is switched on mid-session. */
+    private fun ensureMicForeground() {
+        try {
+            ServiceCompat.startForeground(
+                this, NOTIFICATION_ID, buildNotification("Подключено"),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE or ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
+            )
+        } catch (e: Exception) {
+            Log.w(TAG, "could not add the microphone foreground type: ${e.message}")
+        }
     }
 
     private fun buildNotification(text: String): android.app.Notification {

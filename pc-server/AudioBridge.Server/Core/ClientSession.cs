@@ -68,6 +68,10 @@ public sealed class ClientSession : IDisposable
     private int _pendingBitrate; // 0 = none; applied by the writer so the encoder is never touched concurrently
     private volatile int _maxRawRate; // 0 = no limit
     private int _disconnected;
+    private long _lastMicTicks;
+
+    /// <summary>The phone is sending its microphone right now (a mic frame in the last 2 s).</summary>
+    public bool MicActive => _lastMicTicks != 0 && Environment.TickCount64 - Interlocked.Read(ref _lastMicTicks) < 2000;
 
     /// <param name="useNativeFormat">true = subscribe to the engine's native-format chunk stream
     /// (Wi-Fi/USB raw path); false = subscribe to the fixed 48kHz/stereo stream (Bluetooth/Opus path).</param>
@@ -355,6 +359,7 @@ public sealed class ClientSession : IDisposable
                 {
                     var decoded = _micCodec.Decode(frame.Payload, _micDecodeScratch);
                     _engine.PlayMicSamples(_micDecodeScratch, decoded);
+                    Interlocked.Exchange(ref _lastMicTicks, Environment.TickCount64);
                 }
                 else if (frame.Type == FrameType.Media && frame.Payload.Length >= 1)
                 {
